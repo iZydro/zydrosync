@@ -70,6 +70,36 @@ actor FakeSource: WorkoutSource {
     }
 }
 
+extension FakeSource {
+    func workouts(from start: Date, to end: Date) async throws -> [WorkoutHeader] {
+        if locked { throw WorkoutSourceError.locked }
+        return workouts.filter { $0.startDate >= start && $0.startDate < end }.sorted { $0.startDate < $1.startDate }
+    }
+}
+
+/// El servidor: lo que la lista devuelve. Por defecto, lo que el FakeUploader ha subido.
+actor FakeCatalog: ServerCatalog {
+    private let uploader: FakeUploader
+    private var extra: Set<UUID> = []
+    private var removed: Set<UUID> = []
+    var result: CatalogResult?
+    private(set) var calls = 0
+
+    init(uploader: FakeUploader) { self.uploader = uploader }
+
+    /// Ya estaba en el servidor (p. ej. subida antes de reinstalar la app).
+    func preload(_ id: UUID) { extra.insert(id) }
+    /// Borrada desde el panel de administración.
+    func deleteOnServer(_ id: UUID) { removed.insert(id) }
+    func fail(_ result: CatalogResult?) { self.result = result }
+
+    func workoutIDs() async -> CatalogResult {
+        calls += 1
+        if let result { return result }
+        return .ids(extra.union(await uploader.uploaded).subtracting(removed))
+    }
+}
+
 actor FakeUploader: WorkoutUploader {
     var configured = true
     var script: [UploadOutcome] = []

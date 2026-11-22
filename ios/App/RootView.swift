@@ -11,6 +11,7 @@ struct RootView: View {
             List {
                 SyncStatusSection()
                 ServerSection()
+                HistorySection()
                 QueueSection()
                 permissionsSection
                 workoutsSection
@@ -18,7 +19,7 @@ struct RootView: View {
             .navigationTitle("ZydroTrack Sync")
             .refreshable {
                 await model.refresh()
-                await model.syncNow()
+                await model.syncNow(manual: true)
             }
             .task { await model.refresh() }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in

@@ -30,6 +30,14 @@ struct HealthKitWorkoutSource: WorkoutSource {
         }
     }
 
+    func workouts(from start: Date, to end: Date) async throws -> [WorkoutHeader] {
+        do {
+            return try await reader.runningWorkouts(from: start, to: end).filter(\.verdict.isAccepted).map(\.header)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     private static func map(_ error: any Error) -> WorkoutSourceError {
         switch error as? HealthReadingError {
         case .protectedDataUnavailable: .locked

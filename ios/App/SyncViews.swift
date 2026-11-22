@@ -58,7 +58,7 @@ struct SyncStatusSection: View {
         let snapshot = model.queueSnapshot
         Section("Sincronización") {
             Button {
-                Task { await model.syncNow() }
+                Task { await model.syncNow(manual: true) }
             } label: {
                 HStack {
                     Text("Sincronizar ahora")
@@ -94,6 +94,32 @@ struct SyncStatusSection: View {
             }
             LabeledContent("Enviadas / pendientes / error",
                            value: "\(snapshot.sentCount) / \(snapshot.pendingCount) / \(snapshot.failedCount)")
+            if snapshot.missingCount > 0 {
+                Label("\(snapshot.missingCount) enviadas ya no están en el servidor (¿borradas desde el panel?). No se reenvían solas.",
+                      systemImage: "exclamationmark.icloud")
+                    .font(.footnote)
+                    .foregroundStyle(.purple)
+                Button("Reenviar las \(snapshot.missingCount) que faltan") { confirmResendMissing = true }
+                    .confirmationDialog("¿Volver a subir las \(snapshot.missingCount) carreras que faltan en el servidor?",
+                                        isPresented: $confirmResendMissing, titleVisibility: .visible) {
+                        Button("Reenviar") { Task { await model.resendAllMissing() } }
+                    }
+            }
+            Button {
+                Task { await model.checkWithServer() }
+            } label: {
+                LabeledContent("Comprobar con el servidor") {
+                    if let date = snapshot.lastReconciledAt {
+                        Text(date, format: .relative(presentation: .named)).font(.footnote)
+                    } else {
+                        Text("Nunca").font(.footnote)
+                    }
+                }
+            }
+            .disabled(model.isSyncing)
+            if let message = model.historyMessage {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+            }
             if snapshot.failedCount > 0 {
                 Button("Reintentar todas las que tienen error") { Task { await model.retryAllFailed() } }
             }
@@ -114,27 +140,104 @@ struct SyncStatusSection: View {
     }
 
     @State private var confirmForget = false
+    @State private var confirmResendMissing = false
+}
+
+struct HistorySection: View {
+    @Environment(AppModel.self) private var model
+    @State private var since = Calendar.current.date(byAdding: .year, value: -1, to: .now) ?? .now
+    @State private var didSetDefault = false
+    @State private var confirmImport = false
+    @State private var confirmCancel = false
+
+    var body: some View {
+        let progress = model.queueSnapshot.historic
+        Section {
+            DatePicker("Desde", selection: $since, in: ...Date.now, displayedComponents: .date)
+            Button("Importar carreras desde esta fecha") { confirmImport = true }
+                .disabled(model.isSyncing)
+                .confirmationDialog("¿Importar las carreras del Apple Watch desde el \(since.formatted(date: .long, time: .omitted))?",
+                                    isPresented: $confirmImport, titleVisibility: .visible) {
+                    Button("Importar") { Task { await model.importHistory(since: since) } }
+                } message: {
+                    Text("Se añaden a la cola y se envían por detrás de las recientes. Antes se compara con el servidor: las que ya tiene no se vuelven a subir.")
+                }
+            if progress.total > 0 {
+                VStack(alignment: .leading, spacing: 6) {
+                    ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
+                    Text("\(progress.done) de \(progress.total) en el servidor" + (progress.pending > 0 ? " · \(progress.pending) pendientes" : ""))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if progress.pending > 0 {
+                    Button("Cancelar importación", role: .destructive) { confirmCancel = true }
+                        .confirmationDialog("¿Quitar de la cola las \(progress.pending) carreras del histórico que aún no se han enviado?",
+                                            isPresented: $confirmCancel, titleVisibility: .visible) {
+                            Button("Cancelar importación", role: .destructive) { Task { await model.cancelHistoryImport() } }
+                        }
+                }
+            }
+        } header: {
+            Text("Histórico")
+        } footer: {
+            Text("Las carreras nuevas se envían solas. Las anteriores a la instalación de la app solo se envían si las importas aquí. Si cierras la app, continúa al volver a abrirla.")
+        }
+        .onChange(of: model.oldestWorkoutStart, initial: true) { _, oldest in
+            // La primera vez, propone la carrera más antigua de Salud (o la fecha ya importada).
+            guard !didSetDefault, let date = model.queueSnapshot.historyImportSince ?? oldest else { return }
+            since = Calendar.current.startOfDay(for: date)
+            didSetDefault = true
+        }
+    }
 }
 
 struct QueueSection: View {
     @Environment(AppModel.self) private var model
+    @State private var filter: Filter = .all
+
+    enum Filter: String, CaseIterable {
+        case all = "Todas", pending = "Pendientes", missing = "Faltan", failed = "Error"
+
+        func matches(_ item: QueueItem) -> Bool {
+            switch self {
+            case .all: true
+            case .pending: item.status == .pending
+            case .missing: item.status == .missingOnServer
+            case .failed: item.status == .failed
+            }
+        }
+    }
 
     var body: some View {
-        let items = model.queueSnapshot.items
-        Section("Cola (\(items.count))") {
+        let all = model.queueSnapshot.items
+        let items = all.filter(filter.matches)
+        Section("Cola (\(all.count))") {
+            Picker("Mostrar", selection: $filter) {
+                ForEach(Filter.allCases, id: \.self) { Text($0.rawValue) }
+            }
+            .pickerStyle(.segmented)
             if items.isEmpty {
-                Text("Vacía. Las carreras de las últimas 48 h anteriores a la instalación y todas las posteriores se añaden solas.")
+                Text(all.isEmpty
+                     ? "Vacía. Las carreras de las últimas 48 h anteriores a la instalación y todas las posteriores se añaden solas."
+                     : "Ninguna.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            ForEach(items.prefix(50)) { item in
+            ForEach(items.prefix(100)) { item in
                 QueueRow(item: item)
                     .swipeActions {
-                        if item.status != .sent {
+                        switch item.status {
+                        case .pending, .failed:
                             Button("Reintentar") { Task { await model.retry(item.id) } }
                                 .tint(.blue)
+                        case .sent, .missingOnServer:
+                            Button("Reenviar") { Task { await model.resend(item.id) } }
+                                .tint(.purple)
                         }
                     }
+            }
+            if items.count > 100 {
+                Text("… y \(items.count - 100) más").font(.footnote).foregroundStyle(.secondary)
             }
         }
     }
@@ -146,7 +249,7 @@ struct QueueRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(item.workoutStart, format: .dateTime.day().month().hour().minute())
+                Text(item.workoutStart, format: .dateTime.day().month().year(.twoDigits).hour().minute())
                     .font(.headline)
                 if let d = item.distanceMeters {
                     Text(String(format: "%.2f km", d / 1000)).font(.subheadline)
@@ -169,6 +272,8 @@ struct QueueRow: View {
         case .sent:
             if let sentAt = item.sentAt {
                 parts.append("enviada \(sentAt.formatted(.relative(presentation: .named, unitsStyle: .abbreviated)))")
+            } else if item.serverConfirmedAt != nil {
+                parts.append("ya estaba en el servidor")
             }
             if let bytes = item.payloadBytes { parts.append("\(bytes / 1024) KB") }
             if let status = item.lastHTTPStatus { parts.append("HTTP \(status)") }
@@ -184,7 +289,11 @@ struct QueueRow: View {
             }
         case .failed:
             parts.append(item.lastError ?? "Error")
+        case .missingOnServer:
+            parts.append("no está en el servidor · desliza para reenviar")
         }
+        if item.priority == .historic { parts.append("histórico") }
+        if item.forceUpload == true, item.status == .pending { parts.append("reenvío") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
@@ -206,6 +315,7 @@ struct StatusBadge: View {
         case .sent: "Enviada"
         case .pending: "Pendiente"
         case .failed: "Error"
+        case .missingOnServer: "Falta en servidor"
         }
     }
 
@@ -214,6 +324,7 @@ struct StatusBadge: View {
         case .sent: .green
         case .pending: .orange
         case .failed: .red
+        case .missingOnServer: .purple
         }
     }
 }

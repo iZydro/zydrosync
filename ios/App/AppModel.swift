@@ -37,6 +37,10 @@ final class AppModel {
     private(set) var isSyncing = false
     private(set) var setupError: String?
     private(set) var hasToken = BackendSettings.hasToken
+    /// Carrera más antigua en Salud: inicio propuesto para el histórico.
+    private(set) var oldestWorkoutStart: Date?
+    /// Resultado de la última acción del histórico o de la comprobación con el servidor.
+    private(set) var historyMessage: String?
     var endpointText = BackendSettings.endpointText
     /// La URL que de verdad usa el envío (la guardada), que puede no ser la del campo.
     private(set) var savedEndpoint = BackendSettings.endpointText
@@ -54,8 +58,12 @@ final class AppModel {
             let uploader = HTTPWorkoutUploader(clientVersion: BackendSettings.clientVersion) {
                 BackendSettings.credentials()
             }
+            let catalog = HTTPServerCatalog(clientVersion: BackendSettings.clientVersion) {
+                BackendSettings.credentials()
+            }
             self.queue = queue
-            engine = SyncEngine(queue: queue, source: HealthKitWorkoutSource(reader: reader), uploader: uploader)
+            engine = SyncEngine(queue: queue, source: HealthKitWorkoutSource(reader: reader), uploader: uploader,
+                                catalog: catalog)
             Task { [weak self] in
                 await self?.setSnapshot(queue.snapshot())
                 for await snapshot in queue.updates {
@@ -81,6 +89,7 @@ final class AppModel {
         do {
             authState = try await reader.authorizationRequestState()
             workouts = try await reader.recentRunningWorkouts(limit: 50)
+            oldestWorkoutStart = try await reader.oldestRunningWorkoutStart()
             phase = .idle
         } catch {
             phase = .failed(Self.describe(error))
@@ -97,12 +106,76 @@ final class AppModel {
         await syncNow()
     }
 
-    func syncNow() async {
-        guard let engine, !isSyncing else { return }
+    /// `manual`: lo ha pedido el usuario, así que los reintentos programados para más tarde
+    /// se adelantan. `reconcile`: comparar con el servidor aunque no toque.
+    func syncNow(manual: Bool = false, reconcile: Bool = false) async {
+        guard let engine else { return }
+        if manual { try? await queue?.expedite(now: Date()) }
+        // Si ya hay una pasada, el motor la repite al terminar (y respeta `reconcile`).
+        guard !isSyncing else {
+            await engine.sync(reconcile: reconcile)
+            return
+        }
         isSyncing = true
-        lastReport = await engine.sync()
+        let report = await engine.sync(reconcile: reconcile)
+        lastReport = report
         isSyncing = false
+        if reconcile { historyMessage = Self.describe(report.reconcile, error: report.reconcileError) }
         await scheduleWake()
+    }
+
+    // MARK: Servidor e histórico
+
+    func checkWithServer() async {
+        await syncNow(manual: true, reconcile: true)
+    }
+
+    func importHistory(since: Date) async {
+        guard let engine else { return }
+        do {
+            let result = try await engine.importHistory(since: since)
+            historyMessage = result.found == 0
+                ? "No hay carreras del Apple Watch desde esa fecha."
+                : "\(result.found) carreras del Apple Watch desde esa fecha; \(result.added) añadidas a la cola. Las que ya estén en el servidor no se vuelven a subir."
+        } catch {
+            historyMessage = "No se pudo leer el histórico: \(Self.describe(error))"
+            return
+        }
+        await syncNow(reconcile: true)
+    }
+
+    func cancelHistoryImport() async {
+        let removed = (try? await queue?.cancelHistoricImport()) ?? 0
+        historyMessage = "Importación cancelada: \(removed) carreras quitadas de la cola. Las ya enviadas siguen en el servidor."
+    }
+
+    /// Volver a enviar una carrera. Si no estaba en la cola (anterior a la instalación y sin
+    /// importar), se añade como histórico.
+    func resend(_ header: WorkoutHeader) async {
+        guard let queue else { return }
+        _ = try? await queue.enqueue([header], priority: .historic, advancingAnchorTo: nil, now: Date())
+        try? await queue.resend([header.id], now: Date())
+        await syncNow(manual: true)
+    }
+
+    func resend(_ id: UUID) async {
+        try? await queue?.resend([id], now: Date())
+        await syncNow(manual: true)
+    }
+
+    func resendAllMissing() async {
+        try? await queue?.resendAllMissing(now: Date())
+        await syncNow(manual: true)
+    }
+
+    private static func describe(_ result: ReconcileResult?, error: String?) -> String? {
+        if let error { return "No se pudo comprobar con el servidor: \(error)" }
+        guard let result else { return nil }
+        var parts: [String] = []
+        if result.nowMissing > 0 { parts.append("\(result.nowMissing) ya no están en el servidor") }
+        if result.alreadyOnServer > 0 { parts.append("\(result.alreadyOnServer) ya estaban y no se suben") }
+        if result.reappeared > 0 { parts.append("\(result.reappeared) vuelven a estar") }
+        return parts.isEmpty ? "Comprobado: la app y el servidor coinciden." : "Comprobado: " + parts.joined(separator: "; ") + "."
     }
 
     // MARK: Reintentos con la app en primer plano

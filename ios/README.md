@@ -155,3 +155,45 @@ La primera vez iOS pide permiso de **red local**: acéptalo. iPhone y Mac deben 
 8. **Sin red.** Modo avión y "Sincronizar ahora": Pendiente con el error de red. Quita el modo avión y vuelve a sincronizar.
 9. **Persistencia.** Con algo pendiente, cierra la app desde el multitarea y ábrela: la cola sigue igual (está en `Application Support/ZydroTrackSync/queue.json`).
 10. **Carrera nueva.** Sal a correr (o graba una carrera corta). Al abrir la app después: aparece **Pendiente — "Esperando a que el reloj termine de sincronizar"** durante 2 minutos, y luego se envía. Comprueba en `/tmp/zydro-inbox/<UUID>.json` que trae ruta y FC completas.
+
+## Fase (e): histórico y comparación con el servidor
+
+Contra el servidor real (`https://sync.isidrogilabert.com/v1/workouts` y tu token `zsd_…`).
+Para ver qué tiene el servidor, «Mis carreras» (`https://sync.isidrogilabert.com/`) o el panel
+por túnel (`server/deploy/tunnel.sh`).
+
+**Cómo funciona**
+- **Automático, solo lo nuevo:** la consulta anclada encola las carreras nuevas, como hasta ahora.
+- **Histórico, explícito:** sección **Histórico** › fecha › *Importar carreras desde esta fecha*.
+  Se encolan con prioridad baja (se envían cuando no queda nada reciente) y, antes de subir,
+  la app compara con el servidor: lo que ya tiene **no se vuelve a subir**.
+- **Comparación con el servidor** (`GET /v1/workouts`, con el mismo token): sola una vez al día y
+  con el botón *Comprobar con el servidor*.
+  - Una enviada que el servidor ya no tiene pasa a **Falta en servidor** y **no se reenvía
+    sola**: la reenvías tú (deslizando en la cola, o *Reenviar las N que faltan*).
+  - Una pendiente que el servidor ya tiene se marca **Enviada** sin subirla ("ya estaba en el
+    servidor"): al reinstalar la app no se vuelve a subir todo.
+- **Volver a enviar una:** detalle de la carrera › *Volver a enviar*, o deslizar en la cola. Se
+  sube aunque el servidor la tenga: si el JSON no ha cambiado responde `duplicate`, y si ha
+  cambiado (p. ej. tras mejorar el mapeo) guarda la versión nueva.
+- *Sincronizar ahora* (y tirar hacia abajo) adelanta los reintentos programados para más tarde.
+
+**Pruebas**
+1. **Comprobar con el servidor** con tus 2 carreras ya subidas: *"Comprobado: la app y el
+   servidor coinciden."*
+2. **Borrada en el servidor.** Borra una desde el panel (túnel) y pulsa *Comprobar con el
+   servidor*: queda **Falta en servidor** (morado) y no se envía. *Reenviar las 1 que faltan*:
+   vuelve a **Enviada** y reaparece en «Mis carreras».
+3. **Histórico.** La fecha propuesta es la de tu carrera más antigua en Salud. Importa desde
+   una fecha con pocas carreras primero (p. ej. hace un mes): el mensaje dice cuántas encontró
+   y cuántas añadió; la barra avanza hasta "N de N en el servidor". Comprueba en «Mis carreras»
+   el total por año.
+4. **Cancelar.** Importa un rango grande y pulsa *Cancelar importación* a medias: las
+   pendientes desaparecen de la cola; las ya enviadas siguen en el servidor.
+5. **Cerrar a medias.** Con el histórico en marcha, cierra la app desde el multitarea y ábrela:
+   continúa donde iba.
+6. **Reinstalar.** Borra la app y vuelve a instalarla: al importar el histórico, el mensaje de
+   la comprobación dice "N ya estaban y no se suben", y el servidor no recibe nada (en
+   `deploy/deploy.sh logs` no aparecen subidas).
+7. **Carreras antiguas.** Abre en la app alguna carrera de hace años (lista de Salud) y mira su
+   veredicto: si un Watch antiguo no sale como **Watch**, avísame para ajustar el filtro de origen.

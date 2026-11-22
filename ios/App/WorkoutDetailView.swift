@@ -1,5 +1,6 @@
 import Domain
 import HealthReading
+import SyncCore
 import SwiftUI
 
 /// Muestra lo que HealthReading extrae de una carrera. Es la herramienta de la fase (a)
@@ -12,9 +13,11 @@ struct WorkoutDetailView: View {
     @State private var error: String?
     @State private var elapsed: Duration?
     @State private var export: PayloadExport?
+    @State private var confirmResend = false
 
     var body: some View {
         List {
+            serverSection
             Section("Origen") {
                 row("Fuente", workout.header.source.name)
                 row("Bundle", workout.header.source.bundleId)
@@ -101,6 +104,31 @@ struct WorkoutDetailView: View {
                 elapsed = clock.now - start
             } catch {
                 self.error = AppModel.describe(error)
+            }
+        }
+    }
+
+    /// Estado en ZydroSync y "Volver a enviar" (sube la versión actual del JSON; el servidor
+    /// responde duplicate si no ha cambiado, o updated y la guarda si sí).
+    @ViewBuilder private var serverSection: some View {
+        if workout.verdict.isAccepted {
+            let item = model.queueSnapshot.items.first { $0.id == workout.id }
+            Section("ZydroSync") {
+                if let item {
+                    LabeledContent("Estado") { StatusBadge(status: item.status) }
+                    if let sentAt = item.sentAt {
+                        row("Enviada", sentAt.formatted(date: .abbreviated, time: .shortened))
+                    }
+                } else {
+                    row("Estado", "No está en la cola (anterior a la instalación)")
+                }
+                Button(item?.status == .sent ? "Volver a enviar" : "Enviar ahora") { confirmResend = true }
+                    .disabled(item?.status == .pending)
+                    .confirmationDialog("¿Enviar esta carrera al servidor?", isPresented: $confirmResend, titleVisibility: .visible) {
+                        Button("Enviar") { Task { await model.resend(workout.header) } }
+                    } message: {
+                        Text("Se sube aunque el servidor ya la tenga. Si no ha cambiado, no se duplica.")
+                    }
             }
         }
     }

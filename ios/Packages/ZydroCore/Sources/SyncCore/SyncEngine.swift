@@ -7,6 +7,19 @@ public protocol WorkoutSource: Sendable {
     /// Carreras nuevas desde el ancla, YA filtradas por origen, y el ancla nueva.
     func newWorkouts(after anchor: Data?) async throws -> (workouts: [WorkoutHeader], anchor: Data)
     func rawWorkout(id: UUID) async throws -> RawWorkout
+    /// Carreras que empezaron en [desde, hasta), YA filtradas por origen. Para el histórico.
+    func workouts(from start: Date, to end: Date) async throws -> [WorkoutHeader]
+}
+
+/// Lo que hay en el servidor. Solo los identificadores: es lo que necesita la reconciliación.
+public protocol ServerCatalog: Sendable {
+    func workoutIDs() async -> CatalogResult
+}
+
+public enum CatalogResult: Sendable, Equatable {
+    case ids(Set<UUID>)
+    case unauthorized(status: Int)
+    case failure(String)
 }
 
 public enum WorkoutSourceError: Error, Sendable, Equatable {
@@ -24,6 +37,9 @@ public struct SyncReport: Sendable, Equatable {
     public var retrying = 0
     public var postponed = 0
     public var stoppedBecause: StopReason?
+    /// Resultado de la comparación con el servidor, si se hizo en esta pasada.
+    public var reconcile: ReconcileResult?
+    public var reconcileError: String?
 
     public enum StopReason: String, Sendable, Equatable {
         case locked = "Salud bloqueado (iPhone bloqueado)"
@@ -53,6 +69,8 @@ public actor SyncEngine {
         public var missingRouteRecheck: TimeInterval = 300
         /// Las carreras que empezaron antes de (instalación − esto) son histórico.
         public var firstRunLookback: TimeInterval = 48 * 3600
+        /// Cada cuánto se compara la cola con el servidor por sí sola.
+        public var reconcileInterval: TimeInterval = 24 * 3600
 
         public init() {}
     }
@@ -60,23 +78,30 @@ public actor SyncEngine {
     private let queue: SyncQueue
     private let source: any WorkoutSource
     private let uploader: any WorkoutUploader
+    private let catalog: (any ServerCatalog)?
     private let clock: @Sendable () -> Date
     private let config: Config
 
     private var isRunning = false
     private var rerunRequested = false
+    private var reconcileRequested = false
 
     public init(queue: SyncQueue, source: any WorkoutSource, uploader: any WorkoutUploader,
+                catalog: (any ServerCatalog)? = nil,
                 config: Config = Config(), clock: @escaping @Sendable () -> Date = { Date() }) {
         self.queue = queue
         self.source = source
         self.uploader = uploader
+        self.catalog = catalog
         self.config = config
         self.clock = clock
     }
 
+    /// `reconcile`: comparar con el servidor en esta pasada aunque no toque (botón
+    /// "Comprobar con el servidor", importación del histórico).
     @discardableResult
-    public func sync() async -> SyncReport {
+    public func sync(reconcile: Bool = false) async -> SyncReport {
+        if reconcile { reconcileRequested = true }
         if isRunning {
             rerunRequested = true
             var report = SyncReport()
@@ -94,6 +119,24 @@ public actor SyncEngine {
 
         try? await queue.recordSync(at: clock(), error: report.stoppedBecause?.rawValue)
         return report
+    }
+
+    // MARK: Histórico
+
+    public struct HistoryImport: Sendable, Equatable {
+        public var found: Int
+        public var added: Int
+    }
+
+    /// Encola las carreras del Watch desde `since` (hasta hace una hora, para no pisar una
+    /// recién terminada que aún está llegando). Después, quien llama lanza
+    /// `sync(reconcile: true)`: la pasada compara antes con el servidor, y lo que ya tiene no
+    /// se vuelve a subir.
+    public func importHistory(since: Date) async throws -> HistoryImport {
+        let now = clock()
+        let headers = try await source.workouts(from: since, to: now.addingTimeInterval(-config.missingRouteGrace))
+        let added = try await queue.enqueueHistoric(headers, since: since, now: now)
+        return HistoryImport(found: headers.count, added: added)
     }
 
     // MARK: Pasada
@@ -118,6 +161,26 @@ public actor SyncEngine {
             report.stoppedBecause = .notConfigured
             return
         }
+
+        // Comparar con el servidor antes de enviar: lo que ya tiene no se sube otra vez, y
+        // lo que falta se marca (sin reenviarlo).
+        if await shouldReconcile() {
+            reconcileRequested = false
+            switch await catalog?.workoutIDs() {
+            case let .ids(ids):
+                do {
+                    report.reconcile = try await queue.reconcile(serverIDs: ids, now: clock())
+                } catch {
+                    report.reconcileError = "\(error)"
+                }
+            case .unauthorized:
+                report.reconcileError = "Token rechazado al leer la lista del servidor"
+            case let .failure(message):
+                report.reconcileError = message
+            case nil:
+                break
+            }
+        }
         var visited = Set<UUID>()
         while let item = await queue.nextDue(now: clock(), excluding: visited) {
             if Task.isCancelled {
@@ -130,6 +193,13 @@ public actor SyncEngine {
                 return
             }
         }
+    }
+
+    private func shouldReconcile() async -> Bool {
+        guard catalog != nil, !(await queue.isAuthPaused) else { return false }
+        if reconcileRequested { return true }
+        guard let last = await queue.lastReconciledAt else { return true }
+        return clock().timeIntervalSince(last) >= config.reconcileInterval
     }
 
     private func process(_ item: QueueItem, report: inout SyncReport) async -> SyncReport.StopReason? {

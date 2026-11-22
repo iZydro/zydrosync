@@ -43,9 +43,13 @@ public actor SyncQueue {
             items: manifest.items.sorted { $0.workoutStart > $1.workoutStart },
             authPaused: manifest.authPaused,
             lastSyncAt: manifest.lastSyncAt,
-            lastSyncError: manifest.lastSyncError
+            lastSyncError: manifest.lastSyncError,
+            lastReconciledAt: manifest.lastReconciledAt,
+            historyImportSince: manifest.historyImportSince
         )
     }
+
+    public var lastReconciledAt: Date? { manifest.lastReconciledAt }
 
     /// Siguiente elemento a procesar: pendientes cuyo momento ha llegado; primero `live`,
     /// y dentro de cada prioridad la carrera más reciente (es la que el usuario quiere ver).
@@ -100,6 +104,8 @@ public actor SyncQueue {
             case let .success(status):
                 item.status = .sent
                 item.sentAt = now
+                item.serverConfirmedAt = now
+                item.forceUpload = nil
                 item.lastHTTPStatus = status
                 item.lastError = nil
             case let .unauthorized(status):
@@ -140,7 +146,102 @@ public actor SyncQueue {
         }
     }
 
+    // MARK: Histórico
+
+    /// Encola carreras antiguas con prioridad `historic` (se envían cuando no queda nada
+    /// reciente). No toca el ancla: el histórico no es parte de la consulta anclada.
+    @discardableResult
+    public func enqueueHistoric(_ headers: [WorkoutHeader], since: Date, now: Date) throws -> Int {
+        var added = 0
+        for header in headers where index[header.id] == nil {
+            index[header.id] = manifest.items.count
+            manifest.items.append(QueueItem(header: header, priority: .historic, now: now))
+            added += 1
+        }
+        manifest.historyImportSince = min(manifest.historyImportSince ?? since, since)
+        try persist()
+        return added
+    }
+
+    /// Quita del histórico lo que aún no se ha enviado. Lo enviado se queda.
+    @discardableResult
+    public func cancelHistoricImport() throws -> Int {
+        let before = manifest.items.count
+        manifest.items.removeAll { $0.priority == .historic && $0.status != .sent && $0.status != .missingOnServer }
+        if !manifest.items.contains(where: { $0.priority == .historic }) {
+            manifest.historyImportSince = nil
+        }
+        index = Self.buildIndex(manifest.items)
+        try persist()
+        return before - manifest.items.count
+    }
+
+    // MARK: Reconciliación con el servidor
+
+    /// Compara la cola con la lista completa de `workoutId` del servidor, en una escritura:
+    /// - enviada que el servidor no tiene → `missingOnServer` (no se reenvía sola);
+    /// - ausente que reaparece → `sent`;
+    /// - pendiente o con error que el servidor ya tiene → `sent`, sin subirla otra vez,
+    ///   salvo que el usuario haya pedido reenviarla (`forceUpload`).
+    @discardableResult
+    public func reconcile(serverIDs: Set<UUID>, now: Date) throws -> ReconcileResult {
+        var result = ReconcileResult()
+        for i in manifest.items.indices {
+            let onServer = serverIDs.contains(manifest.items[i].id)
+            var item = manifest.items[i]
+            switch (item.status, onServer) {
+            case (.sent, false):
+                item.status = .missingOnServer
+                result.nowMissing += 1
+            case (.missingOnServer, true):
+                item.status = .sent
+                result.reappeared += 1
+            case (.pending, true), (.failed, true):
+                if item.forceUpload != true {
+                    item.status = .sent
+                    item.lastError = nil
+                    result.alreadyOnServer += 1
+                }
+            default:
+                break
+            }
+            if onServer { item.serverConfirmedAt = now }
+            manifest.items[i] = item
+        }
+        manifest.lastReconciledAt = now
+        try persist()
+        return result
+    }
+
     // MARK: Acciones del usuario
+
+    /// "Volver a enviar": a pendiente, ya, y forzando la subida aunque el servidor la tenga.
+    public func resend(_ ids: [UUID], now: Date) throws {
+        for id in ids {
+            guard let i = index[id] else { continue }
+            manifest.items[i].status = .pending
+            manifest.items[i].attempts = 0
+            manifest.items[i].nextAttemptAt = now
+            manifest.items[i].lastError = nil
+            manifest.items[i].forceUpload = true
+        }
+        try persist()
+    }
+
+    public func resendAllMissing(now: Date) throws {
+        try resend(manifest.items.filter { $0.status == .missingOnServer }.map(\.id), now: now)
+    }
+
+    /// "Sincronizar ahora": lo pendiente con reintento programado pasa a estar listo ya,
+    /// sin tocar el contador de intentos.
+    public func expedite(now: Date) throws {
+        var changed = false
+        for i in manifest.items.indices where manifest.items[i].status == .pending && manifest.items[i].nextAttemptAt > now {
+            manifest.items[i].nextAttemptAt = now
+            changed = true
+        }
+        if changed { try persist() }
+    }
 
     /// Reintento manual: vuelve a pendiente, ya, con el contador a cero.
     public func retry(_ id: UUID, now: Date) throws {

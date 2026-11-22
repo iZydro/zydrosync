@@ -115,6 +115,32 @@ public struct HealthKitReader: Sendable {
         return workouts.map(discovered)
     }
 
+    /// Histórico: las carreras que empezaron en [desde, hasta), de la más antigua a la más
+    /// reciente. Sin límite: son cabeceras (unos cientos de bytes cada una), no muestras.
+    public func runningWorkouts(from start: Date, to end: Date) async throws -> [DiscoveredWorkout] {
+        let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            HealthDataTypes.runningPredicate(),
+            HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate),
+        ])
+        let descriptor = HKSampleQueryDescriptor(
+            predicates: [.workout(predicate)],
+            sortDescriptors: [SortDescriptor(\.startDate, order: .forward)]
+        )
+        let workouts = try await Self.mapErrors { try await descriptor.result(for: store) }
+        return workouts.map(discovered)
+    }
+
+    /// Fecha de la carrera más antigua en Salud (de cualquier origen), para proponerla como
+    /// inicio del histórico.
+    public func oldestRunningWorkoutStart() async throws -> Date? {
+        let descriptor = HKSampleQueryDescriptor(
+            predicates: [.workout(HealthDataTypes.runningPredicate())],
+            sortDescriptors: [SortDescriptor(\.startDate, order: .forward)],
+            limit: 1
+        )
+        return try await Self.mapErrors { try await descriptor.result(for: store) }.first?.startDate
+    }
+
     // MARK: Lectura completa
 
     public func readWorkout(id: UUID) async throws -> RawWorkout {
