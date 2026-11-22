@@ -11,7 +11,9 @@ src/ZydroSync.Api/
   Data/Migrations/           Directory/ y User/ (dos esquemas)
   Auth/                      tokens Bearer opacos (SHA-256), políticas device/integration
   Workouts/                  POST /v1/workouts: validación, gzip con límites, idempotencia
-  Cli/AdminCli.cs            users / tokens / migrate
+  Cli/AdminCli.cs            users / tokens / workouts / migrate
+  Admin/AdminPanel.cs        panel web /admin + API /admin/api (solo token admin, desactivado por defecto)
+  wwwroot/admin/             panel: HTML + JS sin compilación; Leaflet 1.9.4 en vendor/ (sha512 verificado)
 tests/ZydroSync.Api.Tests/   xUnit + WebApplicationFactory con ficheros SQLite reales en un directorio temporal
 Dockerfile                   imagen de producción (aspnet chiseled, sin shell, usuario sin privilegios, volumen /data)
 compose.yaml                 opcional: probar la imagen de producción en local
@@ -90,6 +92,29 @@ dotnet run --project src/ZydroSync.Api -- workouts json tu@email <id> > carrera.
 ```
 
 El secreto de un token solo se muestra al crearlo. En la base de datos solo queda su SHA-256.
+
+## Panel de administración (`/admin`)
+
+Usuarios, tokens (revocar), entrenamientos por usuario y el detalle de cada uno: mapa de la
+ruta, parciales por km, gráficas de FC, ritmo, cadencia, potencia y altitud, descarga del
+JSON y **borrado del entrenamiento en el servidor**.
+
+```bash
+dotnet run --project src/ZydroSync.Api -- tokens create tu@email admin "panel"
+```
+
+Después abre http://localhost:8088/admin y pega el token `zsa_…`. Se guarda solo en esa pestaña.
+
+- **Activado solo en desarrollo** (`Admin:Enabled`). En producción está desactivado y las
+  rutas `/admin` no existen (404). Si se activa allí, lo recomendado es **no publicarlo en
+  el proxy** y entrar por túnel SSH: `ssh -L 8088:127.0.0.1:8088 <servidor>`.
+- El token `admin` ve y borra datos de **todos** los usuarios, y es el único que entra en
+  `/admin/api`. Los de dispositivo e integración reciben 403. Un token admin no puede subir
+  entrenamientos.
+- **CSP estricta:** solo se ejecuta JavaScript servido por el propio servidor, sin CDNs. La
+  única petición externa son las teselas del mapa a `tile.openstreetmap.org`, que así
+  conoce las zonas de las rutas que se visualizan.
+- Las respuestas llevan `Cache-Control: no-store`: los datos de salud no quedan en la caché del navegador.
 
 ## Copias de seguridad
 

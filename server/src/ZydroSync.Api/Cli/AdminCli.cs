@@ -83,7 +83,7 @@ public static class AdminCli
             {
                 if (!Enum.TryParse<TokenKind>(kindText, ignoreCase: true, out var kind))
                 {
-                    Console.Error.WriteLine("Tipo de token: device o integration");
+                    Console.Error.WriteLine("Tipo de token: device, integration o admin");
                     return 2;
                 }
                 var user = await FindUserAsync(db, email, ct);
@@ -180,7 +180,7 @@ public static class AdminCli
                       users delete <email> --yes        borra el usuario y TODOS sus datos
                       workouts list <email> [n]         últimos n entrenamientos (50 por defecto)
                       workouts json <email> <workoutId> payload original (JSON) por la salida estándar
-                      tokens create <email> device|integration [nombre]
+                      tokens create <email> device|integration|admin [nombre]
                       tokens list <email>
                       tokens revoke <tokenId>
                       migrate

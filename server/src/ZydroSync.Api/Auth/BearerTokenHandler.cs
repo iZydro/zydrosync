@@ -11,6 +11,7 @@ public static class Policies
 {
     public const string Device = "device";
     public const string Integration = "integration";
+    public const string Admin = "admin";
 }
 
 /// <summary>

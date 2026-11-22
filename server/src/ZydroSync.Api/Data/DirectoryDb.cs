@@ -8,6 +8,8 @@ public enum TokenKind
     Device = 1,
     /// <summary>Importadores (ZydroTrack): solo pueden leer (S3).</summary>
     Integration = 2,
+    /// <summary>Panel de administración (/admin): ve y borra datos de TODOS los usuarios.</summary>
+    Admin = 3,
 }
 
 public sealed class User

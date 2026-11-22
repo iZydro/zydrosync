@@ -1,0 +1,1 @@
+Leaflet 1.9.4 (npm, sha512 verificado). Licencia BSD-2-Clause: ver LICENSE.

@@ -28,3 +28,7 @@ server/data/
 # Secretos y configuración local
 .env
 *.local.json
+
+# Secretos locales del usuario
+.secrets
+.secrets.*

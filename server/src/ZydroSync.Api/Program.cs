@@ -1,6 +1,7 @@
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
+using ZydroSync.Api.Admin;
 using ZydroSync.Api.Auth;
 using ZydroSync.Api.Cli;
 using ZydroSync.Api.Data;
@@ -29,12 +30,14 @@ builder.Services.AddDbContext<DirectoryDb>((sp, options) =>
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<TokenService>();
 builder.Services.Configure<IngestOptions>(builder.Configuration.GetSection("Ingest"));
+builder.Services.Configure<AdminOptions>(builder.Configuration.GetSection("Admin"));
 
 builder.Services.AddAuthentication(BearerTokenHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, BearerTokenHandler>(BearerTokenHandler.SchemeName, null);
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy(Policies.Device, p => p.RequireClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Device)))
-    .AddPolicy(Policies.Integration, p => p.RequireClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Integration)));
+    .AddPolicy(Policies.Integration, p => p.RequireClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Integration)))
+    .AddPolicy(Policies.Admin, p => p.RequireClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Admin)));
 
 builder.Services.AddProblemDetails();
 
@@ -89,6 +92,7 @@ app.UseRateLimiter();
 app.MapGet("/healthz", async (DirectoryDb db, CancellationToken ct) =>
     await db.Database.CanConnectAsync(ct) ? Results.Ok(new { status = "ok" }) : Results.StatusCode(503));
 app.MapWorkoutIngest();
+app.MapAdminPanel();
 
 await app.RunAsync();
 return 0;

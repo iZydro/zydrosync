@@ -20,6 +20,7 @@ public class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
     public string DataDirectory { get; } = Path.Combine(Path.GetTempPath(), "zydrosync-tests", Guid.NewGuid().ToString("N"));
 
     protected virtual int RateLimitPerMinute => 10_000;
+    protected virtual bool AdminEnabled => false;
 
     public Task InitializeAsync() => Task.CompletedTask;
 
@@ -41,6 +42,7 @@ public class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
         {
             ["Storage:DataDirectory"] = DataDirectory,
             ["RateLimit:PerMinute"] = RateLimitPerMinute.ToString(),
+            ["Admin:Enabled"] = AdminEnabled.ToString(),
         }));
     }
 
@@ -55,6 +57,14 @@ public class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
         var (deviceToken, device) = await tokens.CreateAsync(user.Id, TokenKind.Device, "iPhone", CancellationToken.None);
         var (_, integration) = await tokens.CreateAsync(user.Id, TokenKind.Integration, "ZydroTrack", CancellationToken.None);
         return new TestUser(user.Id, device, integration, deviceToken.Id);
+    }
+
+    public async Task<string> CreateTokenAsync(Guid userId, TokenKind kind)
+    {
+        await using var scope = Services.CreateAsyncScope();
+        var (_, secret) = await scope.ServiceProvider.GetRequiredService<TokenService>()
+            .CreateAsync(userId, kind, kind.ToString(), CancellationToken.None);
+        return secret;
     }
 
     public HttpClient ClientWith(string? token)
@@ -92,6 +102,11 @@ public class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 public sealed class RateLimitedApiFactory : ApiFactory
 {
     protected override int RateLimitPerMinute => 2;
+}
+
+public sealed class AdminApiFactory : ApiFactory
+{
+    protected override bool AdminEnabled => true;
 }
 
 public sealed record TestUser(Guid Id, string DeviceToken, string IntegrationToken, Guid DeviceTokenId);

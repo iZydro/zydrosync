@@ -17,10 +17,16 @@ public sealed class TokenService(DirectoryDb db, TimeProvider time)
 {
     public const string DevicePrefix = "zsd_";
     public const string IntegrationPrefix = "zsi_";
+    public const string AdminPrefix = "zsa_";
 
     public async Task<(ApiToken Token, string Secret)> CreateAsync(Guid userId, TokenKind kind, string name, CancellationToken ct)
     {
-        var prefix = kind == TokenKind.Device ? DevicePrefix : IntegrationPrefix;
+        var prefix = kind switch
+        {
+            TokenKind.Device => DevicePrefix,
+            TokenKind.Integration => IntegrationPrefix,
+            _ => AdminPrefix,
+        };
         var secret = prefix + Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32));
         var token = new ApiToken
         {
