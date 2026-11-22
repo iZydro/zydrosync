@@ -1,0 +1,18 @@
+# Opcional: probar la imagen de producción en local antes de desplegar (S2).
+# El desarrollo normal es nativo: `dotnet run --project src/ZydroSync.Api` (ver README).
+#
+#   docker compose up -d --build     API en http://localhost:8088, datos en el volumen zsdata
+#   docker compose exec api dotnet ZydroSync.Api.dll users list
+#   docker compose down              (los datos se conservan en el volumen)
+name: zydrosync
+
+services:
+  api:
+    build: .
+    ports:
+      - "8088:8080"
+    volumes:
+      - zsdata:/data
+
+volumes:
+  zsdata:

@@ -1,0 +1,288 @@
+openapi: 3.1.0
+info:
+  title: ZydroSync API
+  version: 1.0.0-draft
+  description: |
+    Ingesta de entrenamientos de running procedentes de HealthKit (Apple Watch)
+    vía la app ZydroTrack Sync.
+
+    **Idempotencia.** `workoutId` es el UUID de HealthKit (`HKObject.uuid`) y es
+    la clave natural. El cliente lo envía además en la cabecera `Idempotency-Key`.
+    Reenviar el mismo `workoutId` NO crea un duplicado: el servidor responde 200
+    (`duplicate` si el contenido es idéntico; `updated` si cambió, en cuyo caso guarda la
+    versión nueva con un `serverId` mayor). El cliente trata 200 y 201 como éxito.
+    La unicidad es por usuario: dos usuarios pueden enviar el mismo UUID.
+
+    **Compresión.** El cliente envía el cuerpo con `Content-Encoding: gzip`.
+    Una carrera de 3-4 h con GPS a 1 Hz son ~1-1,5 MB de JSON sin comprimir y
+    ~250-400 KB comprimidos. Límites del servidor: 10 MB de cuerpo y 20 MB de JSON
+    descomprimido (413 si se superan).
+
+    **Series temporales en formato columnar.** Para reducir tamaño, rutas y series
+    se envían como arrays paralelos (`t`, `v`, ...) con tiempos expresados como
+    offset en segundos desde `startDate`. Todos los arrays de un mismo objeto
+    tienen la misma longitud.
+
+    **Semántica de reintentos del cliente.**
+    - 200/201 → enviado.
+    - 400/413/422 → error permanente; el cliente no reintenta automáticamente.
+    - 401/403 → el cliente pausa toda la cola hasta que el usuario cambie el token.
+    - 429/503 → reintento respetando `Retry-After` si existe.
+    - Otros 5xx y errores de red → reintento con backoff exponencial y jitter.
+servers:
+  - url: https://api.zydrotrack.example/v1
+security:
+  - bearerAuth: []
+
+paths:
+  /workouts:
+    post:
+      operationId: ingestWorkout
+      summary: Crea (o confirma de forma idempotente) un entrenamiento
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Igual a `workoutId` (UUID de HealthKit, mayúsculas o minúsculas).
+          schema: { type: string, format: uuid }
+        - name: Content-Encoding
+          in: header
+          required: false
+          schema: { type: string, enum: [gzip, identity] }
+        - name: X-Client-Version
+          in: header
+          required: false
+          description: Versión de ZydroTrack Sync, p. ej. `1.0 (12)`.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkoutUpload' }
+      responses:
+        '201':
+          description: Entrenamiento creado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestResult' }
+        '200':
+          description: Ya existía un entrenamiento con ese `workoutId` para este usuario (status `duplicate` o `updated`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestResult' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '413': { $ref: '#/components/responses/Problem' }
+        '415': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/RetryableProblem' }
+        '500': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/RetryableProblem' }
+
+  /workouts/{workoutId}:
+    delete:
+      operationId: deleteWorkout
+      summary: (OPCIONAL, pendiente de decidir) Propaga un borrado hecho en Salud
+      description: |
+        `HKAnchoredObjectQuery` informa de los objetos borrados (solo UUID).
+        Si se implementa, el cliente llama aquí cuando una carrera ya enviada
+        desaparece de Salud. Debe ser idempotente: 204 tanto si existía como si no.
+      parameters:
+        - name: workoutId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Borrado (o no existía). }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  responses:
+    Problem:
+      description: Error (RFC 9457).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    RetryableProblem:
+      description: Error transitorio; reintentar más tarde.
+      headers:
+        Retry-After:
+          description: Segundos o fecha HTTP.
+          schema: { type: string }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    WorkoutUpload:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, workoutId, sport, indoor, startDate, endDate,
+                 durationSec, elapsedSec, source, series]
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+        workoutId:
+          type: string
+          format: uuid
+          description: UUID de HealthKit. Clave de idempotencia.
+        sport:
+          type: string
+          enum: [running]
+        indoor:
+          type: boolean
+          description: "`HKMetadataKeyIndoorWorkout` (cinta). Si es true, `route` será null."
+        startDate:
+          type: string
+          format: date-time
+          description: ISO 8601 UTC con milisegundos. Origen de todos los offsets `t`.
+        endDate:
+          type: string
+          format: date-time
+        timeZone:
+          type: [string, 'null']
+          description: Identificador IANA (`HKMetadataKeyTimeZone`), p. ej. `Europe/Madrid`.
+        durationSec:
+          type: number
+          description: Tiempo activo (`HKWorkout.duration`, excluye pausas).
+        elapsedSec:
+          type: number
+          description: endDate − startDate (incluye pausas).
+        distanceM:
+          type: [number, 'null']
+        activeEnergyKcal:
+          type: [number, 'null']
+        elevationAscendedM:
+          type: [number, 'null']
+          description: "`HKMetadataKeyElevationAscended`."
+        stepCount:
+          type: [integer, 'null']
+        weather:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/Weather'
+        source:
+          $ref: '#/components/schemas/Source'
+        device:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/Device'
+        events:
+          type: array
+          description: Pausas, reanudaciones, vueltas y segmentos (`HKWorkoutEvent`).
+          items: { $ref: '#/components/schemas/WorkoutEvent' }
+        route:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/Route'
+        series:
+          $ref: '#/components/schemas/Series'
+
+    Source:
+      type: object
+      required: [bundleId, name]
+      properties:
+        bundleId: { type: string, examples: ['com.apple.health.6A2B...'] }
+        name: { type: string, examples: ['Apple Watch de Isidro'] }
+        version: { type: [string, 'null'] }
+        productType: { type: [string, 'null'], examples: ['Watch7,3'] }
+        osVersion: { type: [string, 'null'], examples: ['11.1.0'] }
+
+    Device:
+      type: object
+      properties:
+        name: { type: [string, 'null'] }
+        manufacturer: { type: [string, 'null'] }
+        model: { type: [string, 'null'] }
+        hardwareVersion: { type: [string, 'null'] }
+        softwareVersion: { type: [string, 'null'] }
+
+    Weather:
+      type: object
+      properties:
+        temperatureC: { type: [number, 'null'] }
+        humidityPct: { type: [number, 'null'] }
+
+    WorkoutEvent:
+      type: object
+      required: [type, t]
+      properties:
+        type:
+          type: string
+          enum: [pause, resume, motionPaused, motionResumed, lap, marker, segment, pauseOrResumeRequest]
+        t: { type: number, description: Offset de inicio en segundos desde startDate. }
+        d: { type: number, description: Duración en segundos (0 si es instantáneo). }
+
+    Route:
+      type: object
+      description: |
+        Arrays paralelos, uno por fix GPS (`CLLocation`), ordenados por tiempo.
+        Si HealthKit devuelve varias rutas para el mismo workout se concatenan
+        y `segmentStarts` indica los índices donde empieza cada una.
+      required: [t, lat, lon]
+      properties:
+        t:   { type: array, items: { type: number }, description: Offset en s desde startDate. }
+        lat: { type: array, items: { type: number }, description: Grados WGS84. }
+        lon: { type: array, items: { type: number }, description: Grados WGS84. }
+        alt: { type: array, items: { type: number }, description: Metros sobre el nivel del mar. }
+        hAcc: { type: array, items: { type: number }, description: Precisión horizontal (m). }
+        vAcc: { type: array, items: { type: number }, description: Precisión vertical (m). }
+        speed: { type: array, items: { type: number }, description: m/s; -1 si no válida. }
+        course: { type: array, items: { type: number }, description: Grados; -1 si no válido. }
+        segmentStarts: { type: array, items: { type: integer } }
+
+    TimeSeries:
+      type: object
+      description: |
+        Muestras en formato columnar. `t` es el inicio de la muestra (offset en s);
+        `d` su duración en s (se omite si todas son instantáneas). La unidad es fija
+        por serie y está documentada en `Series`.
+      required: [t, v]
+      properties:
+        t: { type: array, items: { type: number } }
+        d: { type: array, items: { type: number } }
+        v: { type: array, items: { type: number } }
+
+    Series:
+      type: object
+      description: |
+        Todas opcionales: se omiten si el reloj no registró ese tipo.
+        No se envía "ritmo": se envía velocidad (m/s) porque el ritmo es
+        indefinido a velocidad 0; ritmo = 1000 / v (s/km), a calcular en servidor.
+      properties:
+        heartRate:           { $ref: '#/components/schemas/TimeSeries', description: lpm }
+        speed:               { $ref: '#/components/schemas/TimeSeries', description: m/s (HKQuantityTypeIdentifierRunningSpeed) }
+        cadence:             { $ref: '#/components/schemas/TimeSeries', description: pasos/min, derivada de stepCount (pasos / d × 60) }
+        steps:               { $ref: '#/components/schemas/TimeSeries', description: pasos por intervalo (dato bruto) }
+        distance:            { $ref: '#/components/schemas/TimeSeries', description: m por intervalo (no acumulada) }
+        activeEnergy:        { $ref: '#/components/schemas/TimeSeries', description: kcal por intervalo }
+        power:               { $ref: '#/components/schemas/TimeSeries', description: W }
+        strideLength:        { $ref: '#/components/schemas/TimeSeries', description: m }
+        verticalOscillation: { $ref: '#/components/schemas/TimeSeries', description: cm }
+        groundContactTime:   { $ref: '#/components/schemas/TimeSeries', description: ms }
+
+    IngestResult:
+      type: object
+      required: [workoutId, status]
+      properties:
+        workoutId: { type: string, format: uuid }
+        status: { type: string, enum: [created, duplicate, updated] }
+        serverId:
+          type: [string, 'null']
+          description: Cursor (seq) del usuario en el servidor; crece con cada alta o actualización de sus entrenamientos.
+
+    Problem:
+      type: object
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }

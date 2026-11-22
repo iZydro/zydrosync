@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ZydroSync.Api/ZydroSync.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ZydroSync.Api.Tests/ZydroSync.Api.Tests.csproj" />
+  </Folder>
+</Solution>

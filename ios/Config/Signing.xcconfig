@@ -1,0 +1,5 @@
+// Firma personal. Cambia estos dos valores antes de instalar en tu iPhone.
+// El bundle id tiene que ser único en tu cuenta de Apple Developer.
+// El Team ID está en developer.apple.com › Membership, o en Xcode › Settings › Accounts.
+ZT_BUNDLE_ID = com.isidrogilabert.zydrotrack.sync
+DEVELOPMENT_TEAM = GF3CK8EDS7

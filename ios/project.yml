@@ -1,0 +1,56 @@
+# Generar el proyecto:  xcodegen generate
+# El .xcodeproj es un artefacto: no se edita a mano, se regenera desde aquí.
+name: ZydroTrackSync
+
+options:
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+
+packages:
+  ZydroCore:
+    path: Packages/ZydroCore
+
+targets:
+  ZydroTrackSync:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        excludes: ["*.entitlements", "Info.plist"]
+    dependencies:
+      - package: ZydroCore
+        product: ZydroCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(ZT_BUNDLE_ID)
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: App/ZydroTrackSync.entitlements
+        INFOPLIST_FILE: App/Info.plist
+        TARGETED_DEVICE_FAMILY: "1"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: NO
+    attributes:
+      SystemCapabilities:
+        com.apple.HealthKit:
+          enabled: 1
+
+schemes:
+  ZydroTrackSync:
+    build:
+      targets:
+        ZydroTrackSync: all
+    test:
+      targets:
+        - package: ZydroCore/DomainTests

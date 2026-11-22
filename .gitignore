@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+
+# iOS (el .xcodeproj se genera con XcodeGen desde ios/project.yml)
+ios/*.xcodeproj/
+xcuserdata/
+DerivedData/
+.build/
+.swiftpm/
+
+# .NET
+server/**/bin/
+server/**/obj/
+*.user
+.vs/
+TestResults/
+
+# Python
+__pycache__/
+.venv/
+
+# Datos (SQLite) del servidor en desarrollo: contienen datos de salud
+server/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Secretos y configuración local
+.env
+*.local.json
