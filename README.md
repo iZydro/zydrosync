@@ -24,7 +24,8 @@ Apple Watch → Salud (iPhone) → app ZydroSync ──POST /v1/workouts──�
 | Parte | Estado |
 |---|---|
 | iOS (a) permisos y lectura, (b) mapeo y JSON, (c) envío y cola | Hecho |
-| iOS (d) background, (e) histórico y UI | Pendiente |
+| iOS (e) histórico, comparación con el servidor y reenvío | Hecho |
+| iOS (d) background | Pendiente |
 | Servidor S1: API y almacenamiento | Hecho |
 | Servidor S2: despliegue en Lightsail (https://sync.isidrogilabert.com, copias diarias) | Hecho |
 | Web «Mis carreras» y API de lectura (`GET /v1/workouts`) | Hecho |
