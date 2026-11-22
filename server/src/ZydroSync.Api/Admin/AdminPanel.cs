@@ -3,6 +3,7 @@ using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
 using ZydroSync.Api.Auth;
 using ZydroSync.Api.Data;
+using ZydroSync.Api.Workouts;
 
 namespace ZydroSync.Api.Admin;
 
@@ -37,22 +38,6 @@ public static class AdminPanel
         {
             return app;
         }
-
-        app.UseWhen(ctx => ctx.Request.Path.StartsWithSegments("/admin"), branch => branch.Use(async (ctx, next) =>
-        {
-            var h = ctx.Response.Headers;
-            // Sin JavaScript de terceros: Leaflet se sirve desde aquí. Solo las teselas del
-            // mapa vienen de OpenStreetMap. 'unsafe-inline' en estilos lo exige Leaflet.
-            h.ContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-                                      "img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self'; " +
-                                      "frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
-            h.XContentTypeOptions = "nosniff";
-            h.XFrameOptions = "DENY";
-            // OpenStreetMap exige Referer en las teselas: se envía solo el origen.
-            h["Referrer-Policy"] = "strict-origin-when-cross-origin";
-            h.CacheControl = "no-store";
-            await next();
-        }));
 
         var adminFiles = new PhysicalFileProvider(Path.Combine(app.Environment.WebRootPath ?? "wwwroot", "admin"));
         // "/admin" → "/admin/" (las rutas relativas del index.html lo necesitan). No se usa
@@ -132,7 +117,7 @@ public static class AdminPanel
         return Results.Ok(rows.OrderByDescending(w => w.StartDate).Take(Math.Clamp(limit ?? 500, 1, 5000)));
     }
 
-    /// <summary>El payload original. Se sirve comprimido tal cual está guardado: lo descomprime el navegador.</summary>
+    /// <summary>El payload original (comprimido si el cliente acepta gzip).</summary>
     private static async Task<IResult> GetWorkoutJsonAsync(Guid userId, Guid workoutId, HttpContext http,
         DataStore store, CancellationToken ct)
     {
@@ -146,8 +131,7 @@ public static class AdminPanel
         {
             return Results.NotFound();
         }
-        http.Response.Headers.ContentEncoding = "gzip";
-        return Results.Bytes(gzip, "application/json");
+        return WorkoutRead.Payload(http, gzip);
     }
 
     private static async Task<IResult> DeleteWorkoutAsync(Guid userId, Guid workoutId, DataStore store, CancellationToken ct)

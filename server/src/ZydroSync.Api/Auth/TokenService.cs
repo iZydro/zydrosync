@@ -18,6 +18,7 @@ public sealed class TokenService(DirectoryDb db, TimeProvider time)
     public const string DevicePrefix = "zsd_";
     public const string IntegrationPrefix = "zsi_";
     public const string AdminPrefix = "zsa_";
+    public const string WebPrefix = "zsw_";
 
     public async Task<(ApiToken Token, string Secret)> CreateAsync(Guid userId, TokenKind kind, string name, CancellationToken ct)
     {
@@ -25,7 +26,9 @@ public sealed class TokenService(DirectoryDb db, TimeProvider time)
         {
             TokenKind.Device => DevicePrefix,
             TokenKind.Integration => IntegrationPrefix,
-            _ => AdminPrefix,
+            TokenKind.Web => WebPrefix,
+            TokenKind.Admin => AdminPrefix,
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
         };
         var secret = prefix + Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32));
         var token = new ApiToken

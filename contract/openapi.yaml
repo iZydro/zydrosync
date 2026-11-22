@@ -29,13 +29,48 @@ info:
     - 401/403 → el cliente pausa toda la cola hasta que el usuario cambie el token.
     - 429/503 → reintento respetando `Retry-After` si existe.
     - Otros 5xx y errores de red → reintento con backoff exponencial y jitter.
+
+    **Tokens.** Cada token pertenece a un usuario y solo da acceso a sus datos.
+    - `device` (`zsd_…`, app iOS): sube (POST) y lee.
+    - `integration` (`zsi_…`, importadores como ZydroTrack): solo lee.
+    - `web` (`zsw_…`, web «Mis carreras»): solo lee.
+    - `admin` (`zsa_…`): solo el panel de administración; aquí recibe 403.
+
+    **Lectura incremental (importadores).** `GET /workouts?after=<serverId>` devuelve,
+    ordenado por `serverId`, todo lo creado o actualizado después de ese cursor: una
+    actualización asigna un `serverId` nuevo, así que reaparece. El importador guarda el
+    último `serverId` procesado y sigue `nextAfter` hasta que sea null.
 servers:
-  - url: https://api.zydrotrack.example/v1
+  - url: https://sync.isidrogilabert.com/v1
 security:
   - bearerAuth: []
 
 paths:
   /workouts:
+    get:
+      operationId: listWorkouts
+      summary: Resúmenes de los entrenamientos del usuario del token, por serverId
+      description: Tokens `device`, `integration` o `web`. Sin el payload; para eso, `GET /workouts/{workoutId}`.
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: Devuelve solo los de `serverId` mayor que este (cursor). Sin él, desde el principio.
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        '200':
+          description: Una página.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkoutPage' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/RetryableProblem' }
     post:
       operationId: ingestWorkout
       summary: Crea (o confirma de forma idempotente) un entrenamiento
@@ -81,6 +116,27 @@ paths:
         '503': { $ref: '#/components/responses/RetryableProblem' }
 
   /workouts/{workoutId}:
+    get:
+      operationId: getWorkout
+      summary: El payload original del entrenamiento, tal cual lo envió la app
+      description: |
+        Tokens `device`, `integration` o `web`. Con `Accept-Encoding: gzip` se recibe
+        comprimido (`Content-Encoding: gzip`), sin recomprimir; si no, descomprimido.
+      parameters:
+        - name: workoutId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: El JSON subido.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkoutUpload' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/RetryableProblem' }
     delete:
       operationId: deleteWorkout
       summary: (OPCIONAL, pendiente de decidir) Propaga un borrado hecho en Salud
@@ -278,6 +334,34 @@ components:
         serverId:
           type: [string, 'null']
           description: Cursor (seq) del usuario en el servidor; crece con cada alta o actualización de sus entrenamientos.
+
+    WorkoutSummary:
+      type: object
+      required: [workoutId, serverId, sport, startDate, endDate, durationSec, indoor, routePoints, receivedAt, updatedAt]
+      properties:
+        workoutId: { type: string, format: uuid }
+        serverId: { type: string, description: Cursor (seq). Cambia si el entrenamiento se actualiza. }
+        sport: { type: string }
+        startDate: { type: string, format: date-time }
+        endDate: { type: string, format: date-time }
+        durationSec: { type: number }
+        distanceM: { type: [number, 'null'] }
+        indoor: { type: boolean }
+        sourceProductType: { type: [string, 'null'], description: 'Modelo del reloj, p. ej. Watch7,12' }
+        routePoints: { type: integer }
+        receivedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    WorkoutPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/WorkoutSummary' }
+        nextAfter:
+          type: [string, 'null']
+          description: Valor de `after` para la página siguiente; null si no hay más.
 
     Problem:
       type: object

@@ -5,6 +5,7 @@ using ZydroSync.Api.Admin;
 using ZydroSync.Api.Auth;
 using ZydroSync.Api.Cli;
 using ZydroSync.Api.Data;
+using ZydroSync.Api.Web;
 using ZydroSync.Api.Workouts;
 
 // El mismo ejecutable sirve la API o ejecuta un comando de administración (ver AdminCli).
@@ -37,7 +38,9 @@ builder.Services.AddAuthentication(BearerTokenHandler.SchemeName)
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy(Policies.Device, p => p.RequireClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Device)))
     .AddPolicy(Policies.Integration, p => p.RequireClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Integration)))
-    .AddPolicy(Policies.Admin, p => p.RequireClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Admin)));
+    .AddPolicy(Policies.Admin, p => p.RequireClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Admin)))
+    .AddPolicy(Policies.Reader, p => p.RequireClaim(BearerTokenHandler.KindClaim,
+        nameof(TokenKind.Device), nameof(TokenKind.Integration), nameof(TokenKind.Web)));
 
 builder.Services.AddProblemDetails();
 
@@ -83,6 +86,7 @@ await using (var scope = app.Services.CreateAsyncScope())
         .InitializeDirectoryAsync(scope.ServiceProvider.GetRequiredService<DirectoryDb>());
 }
 
+app.UseSecurityHeaders();
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 app.UseAuthentication();
@@ -92,7 +96,9 @@ app.UseRateLimiter();
 app.MapGet("/healthz", async (DirectoryDb db, CancellationToken ct) =>
     await db.Database.CanConnectAsync(ct) ? Results.Ok(new { status = "ok" }) : Results.StatusCode(503));
 app.MapWorkoutIngest();
+app.MapWorkoutRead();
 app.MapAdminPanel();
+app.MapStaticSites();
 
 await app.RunAsync();
 return 0;

@@ -16,7 +16,7 @@ tools/                  Herramientas en Python: servidor de pruebas y tests de c
 ```
 Apple Watch → Salud (iPhone) → app ZydroSync ──POST /v1/workouts──► servidor ZydroSync ──► SQLite por usuario
                                                                          │
-                                       importador de ZydroTrack ◄── GET /v1/workouts?after=<cursor>
+                          web «Mis carreras» · importador de ZydroTrack ◄── GET /v1/workouts?after=<cursor>
 ```
 
 ## Estado
@@ -25,8 +25,10 @@ Apple Watch → Salud (iPhone) → app ZydroSync ──POST /v1/workouts──�
 |---|---|
 | iOS (a) permisos y lectura, (b) mapeo y JSON, (c) envío y cola | Hecho |
 | iOS (d) background, (e) histórico y UI | Pendiente |
-| Servidor S1: API y almacenamiento en local | Hecho |
-| Servidor S2: despliegue en Lightsail · S3: API de lectura e importador · S4: multiusuario completo | Pendiente |
+| Servidor S1: API y almacenamiento | Hecho |
+| Servidor S2: despliegue en Lightsail (https://sync.isidrogilabert.com, copias diarias) | Hecho |
+| Web «Mis carreras» y API de lectura (`GET /v1/workouts`) | Hecho |
+| S3: importador en ZydroTrack · S4: multiusuario completo (Sign in with Apple) | Pendiente |
 
 ## Datos de salud y RGPD
 

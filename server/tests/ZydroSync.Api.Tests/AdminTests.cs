@@ -71,8 +71,10 @@ public sealed class AdminTests(AdminApiFactory api) : IClassFixture<AdminApiFact
         Assert.Equal(id, row.WorkoutId);
         Assert.Equal(3, row.RoutePoints);
 
-        // HttpClient de TestServer no descomprime: se comprueba el gzip a mano.
-        var response = await admin.GetAsync($"/admin/api/users/{runner.Id}/workouts/{id}");
+        // HttpClient de TestServer no descomprime: se pide gzip y se comprueba a mano.
+        var request = new HttpRequestMessage(HttpMethod.Get, $"/admin/api/users/{runner.Id}/workouts/{id}");
+        request.Headers.AcceptEncoding.ParseAdd("gzip");
+        var response = await admin.SendAsync(request);
         Assert.Equal("gzip", response.Content.Headers.ContentEncoding.Single());
         var json = JsonDocument.Parse(Payloads.Gunzip(await response.Content.ReadAsByteArrayAsync()));
         Assert.Equal(id.ToString().ToUpperInvariant(), json.RootElement.GetProperty("workoutId").GetString());

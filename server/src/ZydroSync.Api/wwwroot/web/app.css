@@ -1,0 +1,5 @@
+.footer { font-size: 12px; padding-top: 0; padding-bottom: 32px; }
+.month td { background: var(--bg); color: var(--muted); font-size: 12px; font-weight: 600; }
+.month td::first-letter { text-transform: uppercase; }
+.years { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.years button.active { background: var(--accent); border-color: var(--accent); color: #fff; }

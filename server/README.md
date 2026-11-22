@@ -9,11 +9,16 @@ src/ZydroSync.Api/
   Data/UserDb.cs             users/<userId>.db: entrenamientos de un usuario
   Data/DataStore.cs          rutas, migración de cada fichero al abrirlo, candado de escritura por usuario
   Data/Migrations/           Directory/ y User/ (dos esquemas)
-  Auth/                      tokens Bearer opacos (SHA-256), políticas device/integration
-  Workouts/                  POST /v1/workouts: validación, gzip con límites, idempotencia
-  Cli/AdminCli.cs            users / tokens / workouts / migrate
+  Data/Backup.cs             copias con VACUUM INTO
+  Auth/                      tokens Bearer opacos (SHA-256), políticas device/integration/web/admin
+  Workouts/WorkoutIngest.cs  POST /v1/workouts: validación, gzip con límites, idempotencia
+  Workouts/WorkoutRead.cs    GET /v1/workouts (por serverId) y GET /v1/workouts/{id}
+  Web/StaticSites.cs         cabeceras de seguridad y páginas estáticas (/ y /shared)
+  Cli/AdminCli.cs            users / tokens / workouts / backup / migrate
   Admin/AdminPanel.cs        panel web /admin + API /admin/api (solo token admin, desactivado por defecto)
-  wwwroot/admin/             panel: HTML + JS sin compilación; Leaflet 1.9.4 en vendor/ (sha512 verificado)
+  wwwroot/web/               web «Mis carreras» (/): HTML + JS sin compilación
+  wwwroot/admin/             panel de administración (/admin)
+  wwwroot/shared/            común a los dos: detalle de carrera, estilos, Leaflet 1.9.4 (sha512 verificado)
 tests/ZydroSync.Api.Tests/   xUnit + WebApplicationFactory con ficheros SQLite reales en un directorio temporal
 Dockerfile                   imagen de producción (aspnet chiseled, sin shell, usuario sin privilegios, volumen /data)
 compose.yaml                 opcional: probar la imagen de producción en local
@@ -86,6 +91,7 @@ En local, desde `server/`. En producción, lo mismo con `deploy/deploy.sh cli �
 dotnet run --project src/ZydroSync.Api -- users add tu@email
 dotnet run --project src/ZydroSync.Api -- tokens create tu@email device "iPhone de Isidro"
 dotnet run --project src/ZydroSync.Api -- tokens create tu@email integration "ZydroTrack"
+dotnet run --project src/ZydroSync.Api -- tokens create tu@email web "navegador"
 dotnet run --project src/ZydroSync.Api -- tokens list tu@email
 dotnet run --project src/ZydroSync.Api -- tokens revoke <tokenId>
 dotnet run --project src/ZydroSync.Api -- users delete tu@email --yes    # borra TODOS sus datos y su fichero
@@ -94,6 +100,23 @@ dotnet run --project src/ZydroSync.Api -- workouts json tu@email <id> > carrera.
 ```
 
 El secreto de un token solo se muestra al crearlo. En la base de datos solo queda su SHA-256.
+
+| Tipo | Prefijo | Para | Puede |
+|---|---|---|---|
+| `device` | `zsd_` | app iOS | subir y leer sus entrenamientos |
+| `integration` | `zsi_` | ZydroTrack u otros importadores | leer sus entrenamientos |
+| `web` | `zsw_` | web «Mis carreras» | leer sus entrenamientos |
+| `admin` | `zsa_` | panel `/admin` | ver y borrar datos de **todos** los usuarios (solo en el panel) |
+
+## Web «Mis carreras» (`/`)
+
+`https://sync.isidrogilabert.com/` (en local, http://localhost:8088/): cada usuario pega su
+token `web` y ve **sus** carreras: totales por año, lista por meses y el detalle de cada una
+(mapa, parciales por km, gráficas y descarga del JSON). No puede subir ni borrar.
+
+Lee la API pública (`GET /v1/workouts`, `GET /v1/workouts/{id}`), la misma que usará el
+importador de ZydroTrack. El detalle de la carrera es código común con el panel
+(`wwwroot/shared/`), así que los dos muestran lo mismo.
 
 ## Panel de administración (`/admin`)
 

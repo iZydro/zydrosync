@@ -4,12 +4,14 @@ namespace ZydroSync.Api.Data;
 
 public enum TokenKind
 {
-    /// <summary>App iOS: solo puede escribir (POST /v1/workouts).</summary>
+    /// <summary>App iOS: sube entrenamientos y puede leer los suyos.</summary>
     Device = 1,
-    /// <summary>Importadores (ZydroTrack): solo pueden leer (S3).</summary>
+    /// <summary>Importadores (ZydroTrack): solo leen los entrenamientos de su usuario.</summary>
     Integration = 2,
     /// <summary>Panel de administración (/admin): ve y borra datos de TODOS los usuarios.</summary>
     Admin = 3,
+    /// <summary>Web «Mis carreras»: solo lectura, para pegarlo en un navegador sin riesgo de que suba o borre.</summary>
+    Web = 4,
 }
 
 public sealed class User
