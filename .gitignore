@@ -32,3 +32,6 @@ server/data/
 # Secretos locales del usuario
 .secrets
 .secrets.*
+*.pem
+.DS_Store
+server/.deploy/

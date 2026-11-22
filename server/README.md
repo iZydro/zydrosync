@@ -17,6 +17,7 @@ src/ZydroSync.Api/
 tests/ZydroSync.Api.Tests/   xUnit + WebApplicationFactory con ficheros SQLite reales en un directorio temporal
 Dockerfile                   imagen de producción (aspnet chiseled, sin shell, usuario sin privilegios, volumen /data)
 compose.yaml                 opcional: probar la imagen de producción en local
+deploy/                      despliegue en el Lightsail (deploy.sh), ver deploy/README.md
 dotnet-tools.json            herramienta local dotnet-ef
 ```
 
@@ -78,7 +79,8 @@ abre tras arrancar, así que una migración nueva se aplica a todos sin ningún 
 
 ## Administración (etapa 1: altas a mano)
 
-En local, desde `server/` (en producción: `docker exec <contenedor> dotnet ZydroSync.Api.dll …`):
+En local, desde `server/`. En producción, lo mismo con `deploy/deploy.sh cli …` (p. ej.
+`deploy/deploy.sh cli users list`).
 
 ```bash
 dotnet run --project src/ZydroSync.Api -- users add tu@email
@@ -119,13 +121,16 @@ Después abre http://localhost:8088/admin y pega el token `zsa_…`. Se guarda s
 ## Copias de seguridad
 
 Un fichero SQLite en uso (modo WAL) **no se copia con `cp`**: la copia puede quedar
-inconsistente. Para cada fichero:
+inconsistente. El comando `backup` hace `VACUUM INTO` de todas las bases de datos, con el
+servidor en marcha, y comprueba cada copia con `PRAGMA quick_check`:
 
 ```bash
-sqlite3 data/users/<id>.db "VACUUM INTO '/ruta/copia/<id>.db'"
+dotnet run --project src/ZydroSync.Api -- backup ../backups --keep 14
 ```
 
-Esto se automatizará en S2.
+Cada copia va a `<directorio>/<yyyyMMdd-HHmmss>/`, con la misma estructura que `data/`.
+Para restaurar, para el servidor y copia esos ficheros en su sitio. En producción se hace
+cada día a las 03:30 (ver `deploy/README.md`).
 
 ## Decisiones
 

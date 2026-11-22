@@ -1,0 +1,18 @@
+# Imagen de producción, solo de ejecución: la aplicación llega ya publicada (deploy.sh hace
+# `dotnet publish -r linux-x64` con el SDK del Mac), así que el servidor no necesita SDK y
+# construir la imagen es un COPY de segundos.
+#
+# Chiseled: sin shell ni gestor de paquetes, usuario sin privilegios (uid 1654).
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled
+WORKDIR /app
+COPY app/ .
+ENV ASPNETCORE_HTTP_PORTS=8080
+ENV Storage__DataDirectory=/data
+# Detrás de Caddy: X-Forwarded-For/Proto para que los logs vean la IP y el esquema reales.
+# Seguro porque el contenedor no publica puertos: solo Caddy llega a él.
+ENV ASPNETCORE_FORWARDEDHEADERS_ENABLED=true
+# GC de estación de trabajo: el de servidor reserva memoria por núcleo, y en una máquina
+# de 2 GB compartida con ZydroTrack no sobra.
+ENV DOTNET_gcServer=0
+EXPOSE 8080
+ENTRYPOINT ["dotnet", "ZydroSync.Api.dll"]

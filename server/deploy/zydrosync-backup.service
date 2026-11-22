@@ -1,0 +1,13 @@
+[Unit]
+Description=Copia diaria de las bases de datos de ZydroSync
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# VACUUM INTO dentro del propio contenedor: copia consistente con el servidor en marcha.
+# Quedan en el volumen zydrosync-data, en /data/backups (14 días).
+ExecStart=/usr/bin/docker exec zydrosync dotnet ZydroSync.Api.dll backup /data/backups --keep 14
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

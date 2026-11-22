@@ -1,0 +1,13 @@
+
+# --- ZydroSync (añadido por zydro-ios/server/deploy/deploy.sh) ---
+__DOMAIN__ {
+	# Las carreras llegan comprimidas; el servidor rechaza más de 10 MB igualmente.
+	request_body {
+		max_size 10MB
+	}
+	header Strict-Transport-Security "max-age=31536000"
+	# El panel de administración no se publica (en producción ni existe).
+	respond /admin* 404
+	reverse_proxy zydrosync:8080
+}
+# --- fin ZydroSync ---

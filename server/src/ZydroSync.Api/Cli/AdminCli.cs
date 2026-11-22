@@ -7,14 +7,14 @@ namespace ZydroSync.Api.Cli;
 /// <summary>
 /// Administración desde la línea de comandos, en el mismo ejecutable que la API: una sola
 /// imagen que desplegar. En producción:
-///   docker compose exec api dotnet ZydroSync.Api.dll users add yo@ejemplo.com
+///   deploy/deploy.sh cli users add yo@ejemplo.com
 ///
 /// Es la etapa 1 del multiusuario: altas y tokens a mano. La etapa 2 (S4) añadirá el inicio
 /// de sesión desde la app.
 /// </summary>
 public static class AdminCli
 {
-    private static readonly HashSet<string> Commands = ["users", "tokens", "workouts", "migrate", "help"];
+    private static readonly HashSet<string> Commands = ["users", "tokens", "workouts", "migrate", "backup", "help"];
 
     public static bool IsCommand(string arg) => Commands.Contains(arg);
 
@@ -39,6 +39,28 @@ public static class AdminCli
                 Console.WriteLine($"Directorio migrado: {store.DirectoryDbPath}");
                 Console.WriteLine("Los ficheros de usuario se migran al abrirlos.");
                 return 0;
+
+            case ["backup", var root, .. var rest]:
+            {
+                var keep = rest switch
+                {
+                    [] => 14,
+                    ["--keep", var n] when int.TryParse(n, out var parsed) && parsed >= 1 => parsed,
+                    _ => -1,
+                };
+                if (keep < 1)
+                {
+                    Console.Error.WriteLine("Uso: backup <directorio> [--keep N]  (N >= 1)");
+                    return 2;
+                }
+                var result = await Backup.CreateAsync(store, Path.GetFullPath(root), time.GetUtcNow(), keep, ct);
+                Console.WriteLine($"Copia en {result.Directory}: {result.Files} ficheros, {result.Bytes / 1024} KB.");
+                foreach (var name in result.Pruned)
+                {
+                    Console.WriteLine($"Borrada copia antigua: {name}");
+                }
+                return 0;
+            }
 
             case ["users", "add", var email]:
             {
@@ -183,6 +205,7 @@ public static class AdminCli
                       tokens create <email> device|integration|admin [nombre]
                       tokens list <email>
                       tokens revoke <tokenId>
+                      backup <directorio> [--keep N]    copia de todas las bases de datos (conserva N, 14 por defecto)
                       migrate
                     """);
                 return args is ["help"] ? 0 : 2;
