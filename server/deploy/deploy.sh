@@ -103,7 +103,8 @@ status() {
   remote bash -s <<'EOF'
 D="sudo -n docker"
 echo "Versión:  $($D inspect zydrosync --format '{{index .Config.Labels "zydrosync.release"}}  ({{.State.Status}} desde {{.State.StartedAt}})' 2>/dev/null || echo 'no desplegado')"
-echo "Anterior: $($D inspect zydrosync-previous --format '{{index .Config.Labels "zydrosync.release"}}' 2>/dev/null || echo '—')"
+prev="$($D inspect zydrosync-previous --format '{{index .Config.Labels "zydrosync.release"}}' 2>/dev/null)"
+echo "Anterior: ${prev:-—}"
 $D stats --no-stream --format 'Memoria:  {{.MemUsage}}  CPU {{.CPUPerc}}' zydrosync 2>/dev/null || true
 echo "Copias:"
 $D run --rm -v zydrosync-data:/data:ro alpine:3.20 sh -c 'ls -1 /data/backups 2>/dev/null | tail -5; du -sh /data/users /data/backups 2>/dev/null'
