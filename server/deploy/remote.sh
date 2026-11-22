@@ -15,6 +15,7 @@ NET=zydrosync-net
 VOL=zydrosync-data
 CADDY=caddy
 KEEP_RELEASES=3
+ADMIN_PORT=18088
 D="sudo -n docker"
 
 log() { printf '\033[1m==> %s\033[0m\n' "$*"; }
@@ -58,11 +59,17 @@ ensure_volume() {
 }
 
 run_container() {
-  # Sin puertos publicados: solo se llega por Caddy. Sistema de ficheros de solo lectura
-  # salvo /data y /tmp, sin capacidades y con memoria acotada (2 GB compartidos).
+  # Desde fuera solo se llega por Caddy. El puerto publicado lo está únicamente en el
+  # loopback del servidor (127.0.0.1:$ADMIN_PORT), para el túnel SSH del panel de
+  # administración (deploy/tunnel.sh). El panel solo responde a Host localhost
+  # (Admin:LocalhostOnly), así que por Caddy da 404 aunque esté activo.
+  # Sistema de ficheros de solo lectura salvo /data y /tmp, sin capacidades y con memoria
+  # acotada (2 GB compartidos).
   $D run -d --name "$NAME" \
     --restart unless-stopped \
     --network "$NET" \
+    -p "127.0.0.1:$ADMIN_PORT:8080" \
+    -e Admin__Enabled=true \
     --memory 256m --cpus 1 \
     --read-only --tmpfs /tmp:rw,size=64m \
     --cap-drop ALL --security-opt no-new-privileges \

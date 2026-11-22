@@ -129,6 +129,111 @@ public sealed class AdminTests(AdminApiFactory api) : IClassFixture<AdminApiFact
     }
 }
 
+public sealed class AdminProvisioningTests(AdminApiFactory api) : IClassFixture<AdminApiFactory>
+{
+    private async Task<HttpClient> AdminAsync()
+    {
+        var owner = await api.CreateUserAsync();
+        return api.ClientWith(await api.CreateTokenAsync(owner.Id, TokenKind.Admin));
+    }
+
+    [Fact]
+    public async Task Creates_users_normalizing_the_email_and_rejects_duplicates()
+    {
+        var admin = await AdminAsync();
+        var email = $"{Guid.NewGuid():N}@Example.com";
+
+        var created = await admin.PostAsJsonAsync("/admin/api/users", new CreateUserRequest($"  {email} "));
+        var again = await admin.PostAsJsonAsync("/admin/api/users", new CreateUserRequest(email.ToUpperInvariant()));
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        Assert.Equal(email.ToLowerInvariant(), (await created.Content.ReadFromJsonAsync<AdminUserDto>())!.Email);
+        Assert.Equal(HttpStatusCode.Conflict, again.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("sin-arroba")]
+    [InlineData("dos@@arrobas.com")]
+    [InlineData("@inicio.com")]
+    [InlineData("con espacio@x.com")]
+    public async Task Rejects_invalid_emails(string email)
+    {
+        var admin = await AdminAsync();
+        var response = await admin.PostAsJsonAsync("/admin/api/users", new CreateUserRequest(email));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Created_token_is_returned_once_and_works()
+    {
+        var admin = await AdminAsync();
+        var user = await (await admin.PostAsJsonAsync("/admin/api/users", new CreateUserRequest($"{Guid.NewGuid():N}@x.com")))
+            .Content.ReadFromJsonAsync<AdminUserDto>();
+
+        var response = await admin.PostAsJsonAsync($"/admin/api/users/{user!.Id}/tokens", new CreateTokenRequest("web", "navegador"));
+        var created = await response.Content.ReadFromJsonAsync<CreatedTokenDto>();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.StartsWith("zsw_", created!.Secret);
+        Assert.Equal("Web", created.Token.Kind);
+        Assert.Equal(HttpStatusCode.OK, (await api.ClientWith(created.Secret).GetAsync("/v1/workouts")).StatusCode);
+        // El listado no vuelve a dar el secreto: solo el prefijo.
+        var listed = await admin.GetStringAsync("/admin/api/users");
+        Assert.DoesNotContain(created.Secret, listed);
+        Assert.Contains(created.Token.Prefix, listed);
+    }
+
+    [Theory]
+    [InlineData("root")]
+    [InlineData("4")]
+    [InlineData("")]
+    public async Task Rejects_unknown_token_kinds(string kind)
+    {
+        var admin = await AdminAsync();
+        var user = await api.CreateUserAsync();
+        var response = await admin.PostAsJsonAsync($"/admin/api/users/{user.Id}/tokens", new CreateTokenRequest(kind, null));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Token_for_unknown_user_is_404()
+    {
+        var admin = await AdminAsync();
+        var response = await admin.PostAsJsonAsync($"/admin/api/users/{Guid.NewGuid()}/tokens", new CreateTokenRequest("device", null));
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+}
+
+public sealed class AdminTunnelTests(TunnelAdminApiFactory api) : IClassFixture<TunnelAdminApiFactory>
+{
+    private static HttpRequestMessage Get(string path, string host)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Host = host;
+        return request;
+    }
+
+    [Fact]
+    public async Task Panel_answers_through_the_tunnel_only()
+    {
+        var owner = await api.CreateUserAsync();
+        var admin = api.ClientWith(await api.CreateTokenAsync(owner.Id, TokenKind.Admin));
+
+        Assert.Equal(HttpStatusCode.OK, (await admin.SendAsync(Get("/admin/api/users", "localhost:18088"))).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await admin.SendAsync(Get("/admin/api/users", "127.0.0.1:18088"))).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await api.CreateClient().SendAsync(Get("/admin/", "localhost:18088"))).StatusCode);
+
+        // Por Caddy (Host del dominio público): 404 aunque el token sea admin válido.
+        Assert.Equal(HttpStatusCode.NotFound, (await admin.SendAsync(Get("/admin/api/users", "sync.isidrogilabert.com"))).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await api.CreateClient().SendAsync(Get("/admin/", "sync.isidrogilabert.com"))).StatusCode);
+        // Sin token y desde fuera: 404, no 401 (no revela que existe).
+        Assert.Equal(HttpStatusCode.NotFound, (await api.CreateClient().SendAsync(Get("/admin/api/users", "sync.isidrogilabert.com"))).StatusCode);
+        // El resto del servidor sigue respondiendo con el Host público.
+        Assert.Equal(HttpStatusCode.OK, (await api.CreateClient().SendAsync(Get("/healthz", "sync.isidrogilabert.com"))).StatusCode);
+    }
+}
+
 public sealed class AdminDisabledTests(ApiFactory api) : IClassFixture<ApiFactory>
 {
     [Fact]

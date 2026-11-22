@@ -87,6 +87,7 @@ await using (var scope = app.Services.CreateAsyncScope())
 }
 
 app.UseSecurityHeaders();
+app.UseAdminLocalhostOnly();
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 app.UseAuthentication();

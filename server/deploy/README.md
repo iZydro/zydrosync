@@ -7,6 +7,9 @@ deploy/deploy.sh logs [n]
 deploy/deploy.sh cli users list     # cualquier comando de la CLI, en producción
 deploy/deploy.sh backup             # copia ahora (además de la diaria)
 deploy/deploy.sh rollback           # vuelve a la versión anterior
+
+deploy/tunnel.sh                    # túnel SSH al panel /admin y lo abre en el navegador
+deploy/tunnel.sh down | status
 ```
 
 Se ejecuta desde `server/` o desde cualquier sitio: las rutas son relativas al script. Por
@@ -49,9 +52,27 @@ la raíz del repo (ignorada por git) y a `sync.isidrogilabert.com`. Se cambia co
   un fichero suelto montado en Docker deja de verse dentro si cambia de inodo.
 - `/admin` da 404 también en Caddy: el panel no se publica.
 
+## Panel de administración (túnel)
+
+```bash
+deploy/deploy.sh cli tokens create tu@email admin "panel"   # una vez; guarda el zsa_…
+deploy/tunnel.sh                                            # abre http://localhost:18088/admin/
+deploy/tunnel.sh down
+```
+
+`tunnel.sh` abre `ssh -L 127.0.0.1:18088:127.0.0.1:18088` en segundo plano con un socket de
+control (`~/.ssh/zydrosync-tunnel.sock`), para poder cerrarlo o comprobarlo sin buscar
+procesos. Comprueba que el servidor y el panel responden y abre el navegador.
+
+El panel está activo en el contenedor (`Admin__Enabled=true`) pero con `Admin:LocalhostOnly`:
+solo atiende peticiones con Host `localhost`, que es lo que envía el navegador por el túnel.
+Por Caddy llega con Host `sync.isidrogilabert.com` y recibe 404. Tres capas: Caddy corta
+`/admin*`, el servidor rechaza cualquier Host que no sea local, y hace falta un token admin.
+
 ## El contenedor
 
-- **Sin puertos publicados:** solo se llega por Caddy.
+- **Desde fuera solo se llega por Caddy.** El único puerto publicado es `127.0.0.1:18088`, en
+  el loopback del servidor, para el túnel del panel de administración.
 - **Restricciones:** sistema de ficheros de solo lectura salvo `/data` y `/tmp`, sin capacidades
   (`--cap-drop ALL`), `no-new-privileges` y usuario sin privilegios (uid 1654).
 - **Recursos:** `--memory 256m` (usa unos 60 MB) y GC de estación de trabajo. La máquina

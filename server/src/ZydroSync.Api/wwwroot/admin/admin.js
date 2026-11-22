@@ -39,6 +39,23 @@ async function api(path, options = {}) {
   return res.json();
 }
 
+const postJson = (path, body) =>
+  api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+/** Fila de formulario: campos + botón, con el error de la API debajo. */
+function inlineForm(fields, label, onSubmit) {
+  const error = h("div", { class: "error" });
+  const button = h("button", { class: "primary" }, label);
+  const submit = async () => {
+    error.textContent = "";
+    button.disabled = true;
+    try { await onSubmit(); } catch (e) { if (e.message !== "auth") error.textContent = e.message; } finally { button.disabled = false; }
+  };
+  button.addEventListener("click", submit);
+  for (const f of fields) if (f.tagName === "INPUT") f.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+  return h("div", { class: "panel pad" }, h("div", { class: "form-row" }, fields, button), error);
+}
+
 async function loadUsers(force) {
   if (!usersCache || force) usersCache = await api("/users");
   return usersCache;
@@ -89,11 +106,19 @@ async function renderUsers() {
       h("td", { class: "num" }, fmtBytes(u.dataBytes)),
       h("td", { class: "num" }, `${active} / ${u.tokens.length}`));
   });
+  const email = h("input", { type: "email", placeholder: "email del usuario nuevo", autocomplete: "off" });
+  const newUser = inlineForm([email], "Crear usuario", async () => {
+    const created = await postJson("/users", { email: email.value });
+    usersCache = null;
+    location.hash = `#/users/${created.id}`;
+  });
+
   render(
     h("h1", {}, "Usuarios"),
     h("div", { class: "subtitle" }, `${users.length} usuarios · ${totalWorkouts} entrenamientos`),
-    h("div", { class: "panel table-wrap" }, users.length === 0
-      ? h("div", { class: "empty" }, "Sin usuarios. Crea uno con la CLI: users add <email>")
+    newUser,
+    h("div", { class: "panel table-wrap", style: "margin-top:12px" }, users.length === 0
+      ? h("div", { class: "empty" }, "Sin usuarios.")
       : h("table", {},
         h("thead", {}, h("tr", {}, ["Email", "Alta", "Entrenos", "Último", "Datos", "Tokens activos"]
           .map((t, i) => h("th", { class: i >= 2 && i !== 3 ? "num" : "" }, t)))),
@@ -101,7 +126,19 @@ async function renderUsers() {
   );
 }
 
-async function renderUser(userId) {
+/** Recuadro con el secreto recién creado: solo existe en esta vista, no se vuelve a mostrar. */
+function secretBox(created) {
+  const copy = h("button", {}, "Copiar");
+  copy.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(created.secret);
+    copy.textContent = "Copiado";
+  });
+  return h("div", { class: "panel pad secret" },
+    h("strong", {}, `Token ${created.token.kind} «${created.token.name}» creado. Cópialo ahora: no se volverá a mostrar.`),
+    h("div", { class: "form-row" }, h("code", { class: "mono" }, created.secret), copy));
+}
+
+async function renderUser(userId, created) {
   const users = await loadUsers();
   const user = users.find((u) => u.id === userId);
   if (!user) return renderNotFound();
@@ -125,6 +162,18 @@ async function renderUser(userId) {
       },
     }, "Revocar"))));
 
+  const kind = h("select", {},
+    [["device", "device · app iOS"], ["web", "web · Mis carreras (solo lectura)"],
+      ["integration", "integration · importador (solo lectura)"], ["admin", "admin · este panel"]]
+      .map(([value, text]) => h("option", { value }, text)));
+  const name = h("input", { type: "text", placeholder: "nombre (p. ej. iPhone, navegador)", maxlength: 100 });
+  const newToken = inlineForm([kind, name], "Crear token", async () => {
+    if (kind.value === "admin" && !confirm("Un token admin ve y borra los datos de TODOS los usuarios. ¿Crearlo?")) return;
+    const result = await postJson(`/users/${userId}/tokens`, { kind: kind.value, name: name.value });
+    usersCache = null;
+    await renderUser(userId, result);
+  });
+
   const workoutRows = workouts.map((w) => h("tr", { class: "link", onclick: () => (location.hash = `#/users/${userId}/workouts/${w.workoutId}`) },
     h("td", {}, fmtDateTime(w.startDate)),
     h("td", {}, w.sport + (w.indoor ? " (cinta)" : "")),
@@ -146,7 +195,9 @@ async function renderUser(userId) {
           .map((t, i) => h("th", { class: i >= 2 && i <= 6 ? "num" : "" }, t)))),
         h("tbody", {}, workoutRows))),
     h("h2", {}, "Tokens"),
-    h("div", { class: "panel table-wrap" }, h("table", {},
+    created ? secretBox(created) : null,
+    newToken,
+    h("div", { class: "panel table-wrap", style: "margin-top:12px" }, h("table", {},
       h("thead", {}, h("tr", {}, ["Tipo", "Prefijo", "Nombre", "Creado", "Último uso", "Estado", ""].map((t) => h("th", {}, t)))),
       h("tbody", {}, tokenRows))),
   );

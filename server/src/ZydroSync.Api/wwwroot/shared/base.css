@@ -106,3 +106,14 @@ button.ghost { border-color: transparent; color: var(--muted); }
 .login p { color: var(--muted); }
 .error { color: var(--danger); margin-top: 10px; }
 .empty { padding: 24px; text-align: center; color: var(--muted); }
+
+.form-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.form-row input, .form-row select {
+  flex: 1; min-width: 180px; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); font: inherit;
+}
+.form-row input:focus, .form-row select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.panel .error:empty { display: none; }
+.secret { margin-bottom: 12px; border-color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, var(--panel)); }
+.secret code { flex: 1; padding: 8px 10px; border-radius: 7px; background: var(--bg); word-break: break-all; user-select: all; }
+.secret strong { display: block; margin-bottom: 8px; }

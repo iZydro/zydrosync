@@ -120,22 +120,31 @@ importador de ZydroTrack. El detalle de la carrera es código común con el pane
 
 ## Panel de administración (`/admin`)
 
-Usuarios, tokens (revocar), entrenamientos por usuario y el detalle de cada uno: mapa de la
-ruta, parciales por km, gráficas de FC, ritmo, cadencia, potencia y altitud, descarga del
-JSON y **borrado del entrenamiento en el servidor**.
+Usuarios, tokens y entrenamientos de **todos** los usuarios:
+- **crear usuarios**;
+- **crear tokens** de cualquier tipo (el secreto se muestra una sola vez) y **revocarlos**;
+- ver los entrenamientos de cada usuario con el mismo detalle que «Mis carreras», descargar
+  el JSON y **borrar** un entrenamiento del servidor.
+
+**En producción**, por túnel SSH (ver `deploy/README.md`):
 
 ```bash
-dotnet run --project src/ZydroSync.Api -- tokens create tu@email admin "panel"
+deploy/deploy.sh cli tokens create tu@email admin "panel"   # una vez
+deploy/tunnel.sh            # abre el túnel y http://localhost:18088/admin/
+deploy/tunnel.sh down       # lo cierra
 ```
 
-Después abre http://localhost:8088/admin y pega el token `zsa_…`. Se guarda solo en esa pestaña.
+**En local:** `dotnet run --project src/ZydroSync.Api -- tokens create tu@email admin "panel"` y
+http://localhost:8088/admin. El token se guarda solo en esa pestaña.
 
-- **Activado solo en desarrollo** (`Admin:Enabled`). En producción está desactivado y las
-  rutas `/admin` no existen (404). Si se activa allí, lo recomendado es **no publicarlo en
-  el proxy** y entrar por túnel SSH: `ssh -L 8088:127.0.0.1:8088 <servidor>`.
-- El token `admin` ve y borra datos de **todos** los usuarios, y es el único que entra en
-  `/admin/api`. Los de dispositivo e integración reciben 403. Un token admin no puede subir
-  entrenamientos.
+Por qué así:
+- **Nunca se publica.** `Admin:LocalhostOnly` (activo por defecto) hace que `/admin` solo
+  responda a peticiones con Host `localhost`/`127.0.0.1`, que solo llegan por el túnel: las
+  que pasan por Caddy llevan el Host del dominio y reciben 404, igual que sin token (no un
+  401 que revele que existe). Además, Caddy corta `/admin*` antes. `Admin:Enabled` está
+  desactivado salvo en desarrollo y en el contenedor de producción.
+- El token `admin` es el único que entra en `/admin/api`. Los demás tipos reciben 403, y un
+  token admin no puede subir ni leer por la API pública.
 - **CSP estricta:** solo se ejecuta JavaScript servido por el propio servidor, sin CDNs. La
   única petición externa son las teselas del mapa a `tile.openstreetmap.org`, que así
   conoce las zonas de las rutas que se visualizan.

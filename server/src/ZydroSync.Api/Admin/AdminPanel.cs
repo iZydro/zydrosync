@@ -14,7 +14,20 @@ public sealed class AdminOptions
     /// Si se activa, lo recomendado es no publicarlo en el proxy y entrar por túnel SSH.
     /// </summary>
     public bool Enabled { get; set; }
+
+    /// <summary>
+    /// Solo responde a peticiones con Host localhost / 127.0.0.1 / [::1], es decir, las que
+    /// llegan por el túnel SSH. Las que pasan por Caddy llevan Host sync.isidrogilabert.com
+    /// (Caddy solo enruta ese dominio) y reciben 404, aunque Caddy ya las corta antes.
+    /// Activado en producción; en desarrollo da igual.
+    /// </summary>
+    public bool LocalhostOnly { get; set; }
 }
+
+public sealed record CreateUserRequest(string Email);
+public sealed record CreateTokenRequest(string Kind, string? Name);
+/// <summary>El secreto solo viaja en esta respuesta: no se guarda en claro ni se vuelve a mostrar.</summary>
+public sealed record CreatedTokenDto(AdminTokenDto Token, string Secret);
 
 public sealed record AdminTokenDto(Guid Id, string Kind, string Prefix, string Name,
     DateTimeOffset CreatedAt, DateTimeOffset? LastUsedAt, DateTimeOffset? RevokedAt);
@@ -32,9 +45,32 @@ public sealed record AdminWorkoutDto(Guid WorkoutId, long Seq, string Sport, Dat
 /// </summary>
 public static class AdminPanel
 {
+    /// <summary>
+    /// Va al principio de la cadena, antes de la autenticación: desde fuera del túnel, /admin
+    /// da 404 (ni siquiera 401) y no se consulta ningún token.
+    /// </summary>
+    public static WebApplication UseAdminLocalhostOnly(this WebApplication app)
+    {
+        var options = app.Services.GetRequiredService<IOptions<AdminOptions>>().Value;
+        if (options.Enabled && options.LocalhostOnly)
+        {
+            app.Use(async (ctx, next) =>
+            {
+                if (ctx.Request.Path.StartsWithSegments("/admin") && !IsLocalhost(ctx.Request.Host.Host))
+                {
+                    ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
+                }
+                await next();
+            });
+        }
+        return app;
+    }
+
     public static WebApplication MapAdminPanel(this WebApplication app)
     {
-        if (!app.Services.GetRequiredService<IOptions<AdminOptions>>().Value.Enabled)
+        var options = app.Services.GetRequiredService<IOptions<AdminOptions>>().Value;
+        if (!options.Enabled)
         {
             return app;
         }
@@ -57,6 +93,8 @@ public static class AdminPanel
         var api = app.MapGroup("/admin/api").RequireAuthorization(Policies.Admin);
 
         api.MapGet("/users", ListUsersAsync);
+        api.MapPost("/users", CreateUserAsync);
+        api.MapPost("/users/{userId:guid}/tokens", CreateTokenAsync);
         api.MapPost("/tokens/{tokenId:guid}/revoke", RevokeTokenAsync);
         api.MapGet("/users/{userId:guid}/workouts", ListWorkoutsAsync);
         api.MapGet("/users/{userId:guid}/workouts/{workoutId:guid}", GetWorkoutJsonAsync);
@@ -81,12 +119,58 @@ public static class AdminPanel
                 last = starts.Count > 0 ? starts.Max() : null;
                 bytes = new FileInfo(store.UserDbPath(u.Id)).Length;
             }
-            var tokens = u.Tokens.OrderBy(t => t.CreatedAt)
-                .Select(t => new AdminTokenDto(t.Id, t.Kind.ToString(), t.Prefix, t.Name, t.CreatedAt, t.LastUsedAt, t.RevokedAt))
-                .ToList();
+            var tokens = u.Tokens.OrderBy(t => t.CreatedAt).Select(ToDto).ToList();
             result.Add(new AdminUserDto(u.Id, u.Email, u.CreatedAt, count, last, bytes, tokens));
         }
         return Results.Ok(result);
+    }
+
+    private static bool IsLocalhost(string host) =>
+        host is "localhost" or "127.0.0.1" or "[::1]" or "::1";
+
+    private static AdminTokenDto ToDto(ApiToken t) =>
+        new(t.Id, t.Kind.ToString(), t.Prefix, t.Name, t.CreatedAt, t.LastUsedAt, t.RevokedAt);
+
+    private static async Task<IResult> CreateUserAsync(CreateUserRequest request, DirectoryDb directory,
+        TimeProvider time, CancellationToken ct)
+    {
+        var email = request.Email?.Trim().ToLowerInvariant() ?? "";
+        // Validación mínima: es un identificador para el administrador, no se envía correo.
+        if (email.Length is < 3 or > 320 || email.Count(c => c == '@') != 1 || email.StartsWith('@') || email.EndsWith('@')
+            || email.Any(char.IsWhiteSpace))
+        {
+            return Results.Problem(statusCode: 400, detail: "Email no válido");
+        }
+        if (await directory.Users.AnyAsync(u => u.Email == email, ct))
+        {
+            return Results.Problem(statusCode: 409, detail: $"Ya existe el usuario {email}");
+        }
+        var user = new User { Id = Guid.CreateVersion7(), Email = email, CreatedAt = time.GetUtcNow() };
+        directory.Users.Add(user);
+        await directory.SaveChangesAsync(ct);
+        return Results.Created($"/admin/api/users/{user.Id}",
+            new AdminUserDto(user.Id, user.Email, user.CreatedAt, 0, null, 0, []));
+    }
+
+    private static async Task<IResult> CreateTokenAsync(Guid userId, CreateTokenRequest request, DirectoryDb directory,
+        TokenService tokens, CancellationToken ct)
+    {
+        if (!Enum.TryParse<TokenKind>(request.Kind, ignoreCase: true, out var kind) || !Enum.IsDefined(kind)
+            || int.TryParse(request.Kind, out _))
+        {
+            return Results.Problem(statusCode: 400, detail: "Tipo de token: device, integration, web o admin");
+        }
+        var name = string.IsNullOrWhiteSpace(request.Name) ? kind.ToString() : request.Name.Trim();
+        if (name.Length > 100)
+        {
+            return Results.Problem(statusCode: 400, detail: "Nombre demasiado largo (100 caracteres)");
+        }
+        if (!await directory.Users.AnyAsync(u => u.Id == userId, ct))
+        {
+            return Results.NotFound();
+        }
+        var (token, secret) = await tokens.CreateAsync(userId, kind, name, ct);
+        return Results.Ok(new CreatedTokenDto(ToDto(token), secret));
     }
 
     private static async Task<IResult> RevokeTokenAsync(Guid tokenId, DirectoryDb directory, TimeProvider time, CancellationToken ct)

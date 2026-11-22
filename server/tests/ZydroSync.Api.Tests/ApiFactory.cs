@@ -21,6 +21,7 @@ public class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
     protected virtual int RateLimitPerMinute => 10_000;
     protected virtual bool AdminEnabled => false;
+    protected virtual bool AdminLocalhostOnly => false;
 
     public Task InitializeAsync() => Task.CompletedTask;
 
@@ -43,6 +44,7 @@ public class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
             ["Storage:DataDirectory"] = DataDirectory,
             ["RateLimit:PerMinute"] = RateLimitPerMinute.ToString(),
             ["Admin:Enabled"] = AdminEnabled.ToString(),
+            ["Admin:LocalhostOnly"] = AdminLocalhostOnly.ToString(),
         }));
     }
 
@@ -107,6 +109,13 @@ public sealed class RateLimitedApiFactory : ApiFactory
 public sealed class AdminApiFactory : ApiFactory
 {
     protected override bool AdminEnabled => true;
+}
+
+/// <summary>Como en producción: panel activo, pero solo para Host localhost (el túnel SSH).</summary>
+public sealed class TunnelAdminApiFactory : ApiFactory
+{
+    protected override bool AdminEnabled => true;
+    protected override bool AdminLocalhostOnly => true;
 }
 
 public sealed record TestUser(Guid Id, string DeviceToken, string IntegrationToken, Guid DeviceTokenId);
