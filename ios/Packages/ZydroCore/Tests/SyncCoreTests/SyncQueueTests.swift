@@ -184,6 +184,27 @@ struct SyncQueueTests {
         #expect(await queue.nextWakeDate() == nil)
     }
 
+    @Test("Borrar enviados: quita solo los enviados y reinicia el ancla, en una escritura")
+    func forgetSent() async throws {
+        let store = InMemoryQueueStore()
+        let queue = try makeQueue(store)
+        let sent = F.header(1, start: t0), pending = F.header(2, start: t0), failed = F.header(3, start: t0)
+        try await queue.enqueue([sent, pending, failed], priority: .live, advancingAnchorTo: Data("A".utf8), now: t0)
+        try await queue.record(.success(status: 201), for: sent.id, payloadBytes: nil, now: t0)
+        try await queue.record(.permanent(status: 422, message: "x"), for: failed.id, payloadBytes: nil, now: t0)
+        let savesBefore = store.saveCount
+
+        let removed = try await queue.forgetSentAndRediscover()
+
+        #expect(removed == 1)
+        #expect(store.saveCount == savesBefore + 1)
+        #expect(await queue.item(sent.id) == nil)
+        #expect(await queue.item(pending.id)?.status == .pending)
+        #expect(await queue.item(failed.id)?.status == .failed)
+        #expect(await queue.anchor == nil)
+        #expect(store.current?.anchor == nil)
+    }
+
     @Test("Aplazar no cuenta como intento")
     func postponeDoesNotCount() async throws {
         let queue = try makeQueue()

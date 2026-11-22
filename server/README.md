@@ -85,6 +85,8 @@ dotnet run --project src/ZydroSync.Api -- tokens create tu@email integration "Zy
 dotnet run --project src/ZydroSync.Api -- tokens list tu@email
 dotnet run --project src/ZydroSync.Api -- tokens revoke <tokenId>
 dotnet run --project src/ZydroSync.Api -- users delete tu@email --yes    # borra TODOS sus datos y su fichero
+dotnet run --project src/ZydroSync.Api -- workouts list tu@email [n]     # últimos n entrenamientos (50)
+dotnet run --project src/ZydroSync.Api -- workouts json tu@email <id> > carrera.json   # payload original
 ```
 
 El secreto de un token solo se muestra al crearlo. En la base de datos solo queda su SHA-256.

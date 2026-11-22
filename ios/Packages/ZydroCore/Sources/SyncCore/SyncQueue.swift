@@ -161,6 +161,23 @@ public actor SyncQueue {
         try persist()
     }
 
+    /// Olvida las carreras enviadas y reinicia el ancla de HealthKit, en una sola escritura.
+    ///
+    /// Solo quitarlas de la cola no bastaría: el ancla ya las ha dejado atrás y nunca
+    /// volverían. Con el ancla a cero, la siguiente sincronización las redescubre y las envía
+    /// otra vez (respetando el corte de la primera ejecución; las más antiguas son cosa de la
+    /// importación del histórico). Para el servidor es un reenvío idempotente.
+    /// Útil al cambiar de servidor. Las pendientes y las de error se conservan.
+    @discardableResult
+    public func forgetSentAndRediscover() throws -> Int {
+        let before = manifest.items.count
+        manifest.items.removeAll { $0.status == .sent }
+        manifest.anchor = nil
+        index = Self.buildIndex(manifest.items)
+        try persist()
+        return before - manifest.items.count
+    }
+
     /// Tras cambiar el token: se reanuda y todo lo pendiente pasa a estar listo ya.
     public func resumeAfterCredentialsChange(now: Date) throws {
         manifest.authPaused = false

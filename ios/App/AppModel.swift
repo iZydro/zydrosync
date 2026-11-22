@@ -38,6 +38,8 @@ final class AppModel {
     private(set) var setupError: String?
     private(set) var hasToken = BackendSettings.hasToken
     var endpointText = BackendSettings.endpointText
+    /// La URL que de verdad usa el envío (la guardada), que puede no ser la del campo.
+    private(set) var savedEndpoint = BackendSettings.endpointText
     /// Nunca se rellena con el token guardado: solo sirve para escribir uno nuevo.
     var tokenText = ""
 
@@ -140,7 +142,9 @@ final class AppModel {
     }
 
     func saveSettings() async {
-        BackendSettings.endpointText = endpointText.trimmingCharacters(in: .whitespaces)
+        BackendSettings.endpointText = endpointText.trimmingCharacters(in: .whitespacesAndNewlines)
+        savedEndpoint = BackendSettings.endpointText
+        endpointText = savedEndpoint
         if !tokenText.isEmpty {
             do {
                 try BackendSettings.tokenStore.write(tokenText)
@@ -152,6 +156,10 @@ final class AppModel {
         hasToken = BackendSettings.hasToken
         try? await queue?.resumeAfterCredentialsChange(now: Date())
         await syncNow()
+    }
+
+    var hasUnsavedSettings: Bool {
+        endpointText.trimmingCharacters(in: .whitespacesAndNewlines) != savedEndpoint || !tokenText.isEmpty
     }
 
     func deleteToken() {
@@ -166,6 +174,16 @@ final class AppModel {
 
     func retryAllFailed() async {
         try? await queue?.retryAllFailed(now: Date())
+        await syncNow()
+    }
+
+    /// Olvida las enviadas y reinicia el ancla: se redescubren y se reenvían (ver SyncQueue).
+    func forgetSentAndResend() async {
+        do {
+            try await queue?.forgetSentAndRediscover()
+        } catch {
+            setupError = "No se pudo vaciar la cola: \(error)"
+        }
         await syncNow()
     }
 

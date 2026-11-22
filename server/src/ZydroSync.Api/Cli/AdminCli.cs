@@ -14,7 +14,7 @@ namespace ZydroSync.Api.Cli;
 /// </summary>
 public static class AdminCli
 {
-    private static readonly HashSet<string> Commands = ["users", "tokens", "migrate", "help"];
+    private static readonly HashSet<string> Commands = ["users", "tokens", "workouts", "migrate", "help"];
 
     public static bool IsCommand(string arg) => Commands.Contains(arg);
 
@@ -124,12 +124,62 @@ public static class AdminCli
                 return revoked == 1 ? 0 : 1;
             }
 
+            case ["workouts", "list", var email, .. var rest]:
+            {
+                var user = await FindUserAsync(db, email, ct);
+                if (user is null)
+                {
+                    return 1;
+                }
+                if (!store.UserDbExists(user.Id))
+                {
+                    Console.WriteLine("Sin entrenamientos.");
+                    return 0;
+                }
+                var limit = rest is [var n] && int.TryParse(n, out var parsed) ? parsed : 50;
+                await using var userDb = await store.OpenUserAsync(user.Id, ct);
+                // Ordenar en memoria: son pocas filas y así no depende de cómo guarda SQLite las fechas.
+                var workouts = (await userDb.Workouts.AsNoTracking().ToListAsync(ct))
+                    .OrderByDescending(w => w.StartDate).Take(limit).ToList();
+                Console.WriteLine($"{"Inicio (local)",-17} {"Deporte",-8} {"km",7} {"Duración",9} {"Ruta",6} {"gzip",7} {"seq",4}  WorkoutId");
+                foreach (var w in workouts)
+                {
+                    Console.WriteLine(
+                        $"{w.StartDate.ToLocalTime():yyyy-MM-dd HH:mm} {w.Sport,-8} {(w.DistanceM ?? 0) / 1000,7:F2} " +
+                        $"{TimeSpan.FromSeconds(w.DurationSec),9:h\\:mm\\:ss} {w.RoutePoints,6} {w.PayloadGzip.Length / 1024,5} KB {w.Seq,4}  {w.WorkoutId}");
+                }
+                return 0;
+            }
+
+            case ["workouts", "json", var email, var idText] when Guid.TryParse(idText, out var workoutId):
+            {
+                var user = await FindUserAsync(db, email, ct);
+                if (user is null || !store.UserDbExists(user.Id))
+                {
+                    return 1;
+                }
+                await using var userDb = await store.OpenUserAsync(user.Id, ct);
+                var workout = await userDb.Workouts.AsNoTracking().FirstOrDefaultAsync(w => w.WorkoutId == workoutId, ct);
+                if (workout is null)
+                {
+                    Console.Error.WriteLine("No existe ese entrenamiento.");
+                    return 1;
+                }
+                // El payload original, descomprimido, a la salida estándar (redirígelo a un fichero).
+                using var gzip = new System.IO.Compression.GZipStream(new MemoryStream(workout.PayloadGzip),
+                    System.IO.Compression.CompressionMode.Decompress);
+                await gzip.CopyToAsync(Console.OpenStandardOutput(), ct);
+                return 0;
+            }
+
             default:
                 Console.WriteLine("""
                     Uso:
                       users add <email>
                       users list
                       users delete <email> --yes        borra el usuario y TODOS sus datos
+                      workouts list <email> [n]         últimos n entrenamientos (50 por defecto)
+                      workouts json <email> <workoutId> payload original (JSON) por la salida estándar
                       tokens create <email> device|integration [nombre]
                       tokens list <email>
                       tokens revoke <tokenId>

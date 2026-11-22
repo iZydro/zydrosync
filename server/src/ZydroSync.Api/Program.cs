@@ -9,6 +9,15 @@ using ZydroSync.Api.Workouts;
 // El mismo ejecutable sirve la API o ejecuta un comando de administración (ver AdminCli).
 var isCli = args.Length > 0 && AdminCli.IsCommand(args[0]);
 var builder = WebApplication.CreateBuilder(isCli ? [] : args);
+if (isCli)
+{
+    // En la CLI, la salida estándar es solo el resultado del comando (redirigible a un
+    // fichero). Los avisos van a stderr, y los mensajes informativos se silencian; el nivel
+    // se fuerza por configuración porque la de appsettings tiene prioridad sobre SetMinimumLevel.
+    builder.Configuration["Logging:LogLevel:Default"] = "Warning";
+    builder.Services.Configure<Microsoft.Extensions.Logging.Console.ConsoleLoggerOptions>(
+        o => o.LogToStandardErrorThreshold = LogLevel.Trace);
+}
 
 builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection("Storage"));
 builder.Services.AddSingleton<DataStore>();

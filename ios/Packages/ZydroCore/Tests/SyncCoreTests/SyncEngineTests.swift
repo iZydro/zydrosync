@@ -162,6 +162,22 @@ struct SyncEngineTests {
         #expect(await h.queue.item(run.id)?.lastError == "Ya no está en Salud")
     }
 
+    @Test("Tras borrar enviados, la siguiente pasada las redescubre y las reenvía")
+    func forgetSentResends() async throws {
+        let h = try Harness()
+        let run = F.header(1, start: F.t0.addingTimeInterval(-86400))
+        await h.source.add(run)
+        #expect(await h.engine.sync().sent == 1)
+        #expect(await h.engine.sync().sent == 0)
+
+        try await h.queue.forgetSentAndRediscover()
+        let report = await h.engine.sync()
+
+        #expect(report.discovered == 1)
+        #expect(report.sent == 1)
+        #expect(await h.uploader.uploaded == [run.id, run.id])
+    }
+
     @Test("El ancla evita redescubrir: la segunda pasada no encola nada nuevo")
     func anchorPreventsRediscovery() async throws {
         let h = try Harness()

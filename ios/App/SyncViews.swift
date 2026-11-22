@@ -3,6 +3,7 @@ import SyncCore
 
 struct ServerSection: View {
     @Environment(AppModel.self) private var model
+    @State private var confirmDeleteToken = false
 
     var body: some View {
         @Bindable var model = model
@@ -12,22 +13,40 @@ struct ServerSection: View {
                 .textContentType(.URL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .submitLabel(.done)
+                .onSubmit { Task { await model.saveSettings() } }
                 .font(.footnote.monospaced())
             SecureField(model.hasToken ? "Token guardado (escribe para cambiarlo)" : "Token Bearer", text: $model.tokenText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            HStack {
-                Button("Guardar") { Task { await model.saveSettings() } }
-                Spacer()
-                if model.hasToken {
-                    Button("Borrar token", role: .destructive) { model.deleteToken() }
-                        .buttonStyle(.borderless)
-                }
+                .submitLabel(.done)
+                .onSubmit { Task { await model.saveSettings() } }
+            // Cada botón en su propia fila: en una List, dos botones en la misma fila se
+            // reparten mal los toques y "Guardar" podía no ejecutarse.
+            Button {
+                Task { await model.saveSettings() }
+            } label: {
+                Label(model.hasUnsavedSettings ? "Guardar cambios" : "Guardado",
+                      systemImage: model.hasUnsavedSettings ? "square.and.arrow.down" : "checkmark")
+            }
+            .disabled(!model.hasUnsavedSettings)
+            if model.hasToken {
+                Button("Borrar token", role: .destructive) { confirmDeleteToken = true }
+                    .confirmationDialog("¿Borrar el token de este iPhone?", isPresented: $confirmDeleteToken) {
+                        Button("Borrar token", role: .destructive) { model.deleteToken() }
+                    }
             }
         } header: {
             Text("Servidor")
         } footer: {
-            Text("El token se guarda en el Keychain del iPhone, solo en este dispositivo.")
+            VStack(alignment: .leading, spacing: 4) {
+                if model.hasUnsavedSettings {
+                    Text("Hay cambios sin guardar: se sigue enviando a la URL anterior.")
+                        .foregroundStyle(.orange)
+                }
+                Text("En uso: \(model.savedEndpoint)").font(.caption.monospaced())
+                Text("El token se guarda en el Keychain del iPhone, solo en este dispositivo.")
+            }
         }
     }
 }
@@ -59,6 +78,10 @@ struct SyncStatusSection: View {
             if let error = model.setupError {
                 Text(error).foregroundStyle(.red).font(.footnote)
             }
+            LabeledContent("Servidor") {
+                Text(URL(string: model.savedEndpoint).map { "\($0.host() ?? "?"):\($0.port.map(String.init) ?? "")" } ?? "—")
+                    .font(.footnote.monospaced())
+            }
             LabeledContent("Última sincronización") {
                 if let date = snapshot.lastSyncAt {
                     Text(date, format: .relative(presentation: .named))
@@ -74,8 +97,23 @@ struct SyncStatusSection: View {
             if snapshot.failedCount > 0 {
                 Button("Reintentar todas las que tienen error") { Task { await model.retryAllFailed() } }
             }
+            if snapshot.sentCount > 0 {
+                Button("Borrar enviadas y volver a enviar", role: .destructive) {
+                    confirmForget = true
+                }
+                .confirmationDialog("¿Borrar las \(snapshot.sentCount) enviadas de la cola?",
+                                    isPresented: $confirmForget, titleVisibility: .visible) {
+                    Button("Borrar y volver a enviar", role: .destructive) {
+                        Task { await model.forgetSentAndResend() }
+                    }
+                } message: {
+                    Text("La app las olvidará y las volverá a buscar en Salud para enviarlas de nuevo, por ejemplo a un servidor nuevo. Si el servidor ya las tiene, no se duplican. No borra nada de Salud ni del servidor.")
+                }
+            }
         }
     }
+
+    @State private var confirmForget = false
 }
 
 struct QueueSection: View {
