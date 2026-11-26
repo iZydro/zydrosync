@@ -273,6 +273,28 @@ try:
         _, location = browser_login("bea@example.test", admin=True)
         check(location == "/admin/?login_error=not_admin", "un usuario normal no puede entrar como administrador")
 
+        # 11. Login de la app (PKCE propio, vuelta a zydrosync://auth, token de dispositivo).
+        CURRENT["email"] = "bea@example.test"
+        app_verifier = secrets.token_urlsafe(48)
+        app_state = secrets.token_urlsafe(24)
+        start_url = SYNC + "/auth/app/start?" + urllib.parse.urlencode({
+            "redirect_uri": "zydrosync://auth", "code_challenge": b64(hashlib.sha256(app_verifier.encode()).digest()),
+            "code_challenge_method": "S256", "state": app_state, "device": "iPhone de Bea"})
+        _, back = follow(requests.Session(), start_url, "zydrosync://")
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(back).query)
+        check(back.startswith("zydrosync://auth?") and q["state"] == [app_state] and "code" in q, "app: vuelve a zydrosync://auth con código y su state")
+        redeem = lambda verifier: requests.post(SYNC + "/auth/app/token", data={"code": q["code"][0], "code_verifier": verifier,
+                                                                               "redirect_uri": "zydrosync://auth"})
+        app_token = redeem(app_verifier).json()
+        check(app_token["token"].startswith("zsd_") and app_token["email"] == "bea@example.test", "app: canje con su verifier → token de dispositivo")
+        check(redeem(app_verifier).status_code == 400, "app: el código no se puede reutilizar")
+        check(upload(app_token["token"]) is not None, "app: el token de dispositivo sube carreras")
+        check(requests.delete(SYNC + "/v1/device/token", headers={"Authorization": "Bearer " + app_token["token"]}).status_code == 204,
+              "app: cerrar sesión revoca su token")
+        r = requests.get(SYNC + "/auth/app/start?" + urllib.parse.urlencode({"redirect_uri": "https://evil.test/cb", "code_challenge": "x" * 43,
+                                                                             "code_challenge_method": "S256", "state": app_state}), allow_redirects=False)
+        check(r.status_code == 400 and "Location" not in r.headers, "app: redirect_uri no registrado rechazado")
+
         services_log = (pathlib.Path(tmp) / "services.log").read_text()
         check(SECRET_SYNC not in services_log and cookie not in services_log and tokens["access_token"] not in services_log,
               "ni secretos, ni cookies, ni tokens en los logs de los servicios")

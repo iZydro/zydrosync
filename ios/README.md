@@ -197,3 +197,26 @@ por túnel (`server/deploy/tunnel.sh`).
    `deploy/deploy.sh logs` no aparecen subidas).
 7. **Carreras antiguas.** Abre en la app alguna carrera de hace años (lista de Salud) y mira su
    veredicto: si un Watch antiguo no sale como **Watch**, avísame para ajustar el filtro de origen.
+
+## Entrar con ZydroLogin
+
+Sección **Servidor** › **Entrar con ZydroLogin**. Se abre la hoja de inicio de sesión de iOS
+(`ASWebAuthenticationSession`) con ZydroLogin y Google; al volver, la app recibe un token de
+dispositivo propio y lo guarda en el Keychain. La URL del servidor viene configurada
+(`https://sync.isidrogilabert.com/v1/workouts`); la URL y el token manual siguen en
+**Servidor y token manual**.
+
+- La app no tiene ningún secreto: genera un PKCE en cada intento y el código que recibe en
+  `zydrosync://auth` solo vale con ese PKCE, una vez y durante 2 minutos.
+- **Cerrar sesión** revoca el token de este iPhone en el servidor y lo borra del Keychain. La
+  cola se conserva y se reanuda al volver a entrar.
+- *Entrar con otra cuenta* fuerza la elección de cuenta de Google.
+
+**Pruebas**
+1. Entrar con ZydroLogin: iOS pide permiso para usar sync.isidrogilabert.com; tras Google,
+   «Conectado como <tu email>». En el panel web, tu usuario tiene un token Device
+   «<iPhone> (ZydroLogin)» con último uso reciente.
+2. Sincronizar ahora / Comprobar con el servidor: funciona igual que con el token manual.
+3. Cerrar sesión: «el token de este iPhone está revocado»; en el panel aparece revocado.
+4. Volver a entrar: no pide Google (sesión de ZydroLogin en Safari) y crea un token nuevo.
+5. Cancelar la hoja de login: no cambia nada.

@@ -23,6 +23,12 @@ public sealed class ZydroLoginOptions
     /// <summary>Solo se pide al entrar al panel de administración; además hace falta ser admin (Admin:Emails).</summary>
     public string AdminScope { get; set; } = "zydrosync:admin";
 
+    /// <summary>
+    /// Vuelta a la app iOS tras el login (esquema propio; ver AppLogin). La app la recibe en
+    /// su ASWebAuthenticationSession. Solo se acepta exactamente esta.
+    /// </summary>
+    public string AppRedirectUri { get; set; } = "zydrosync://auth";
+
     public bool Enabled =>
         !string.IsNullOrWhiteSpace(ClientId) && !string.IsNullOrWhiteSpace(ClientSecret) && !string.IsNullOrWhiteSpace(CallbackUri);
 

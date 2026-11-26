@@ -27,10 +27,22 @@ public static class WorkoutIngest
         app.MapPost("/v1/workouts", HandleAsync)
             .RequireAuthorization(Policies.Device)
             .RequireRateLimiting(RateLimitPolicy);
+        // "Cerrar sesión" en la app: el token de dispositivo se revoca a sí mismo.
+        app.MapDelete("/v1/device/token", RevokeOwnTokenAsync)
+            .RequireAuthorization(Policies.Device)
+            .RequireRateLimiting(RateLimitPolicy);
         return app;
     }
 
     private sealed class PayloadTooLargeException : Exception;
+
+    private static async Task<IResult> RevokeOwnTokenAsync(HttpContext http, DirectoryDb directory, TimeProvider time, CancellationToken ct)
+    {
+        var tokenId = Guid.Parse(http.User.FindFirst(BearerTokenHandler.TokenIdClaim)!.Value);
+        await directory.ApiTokens.Where(t => t.Id == tokenId && t.RevokedAt == null)
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAt, time.GetUtcNow()), ct);
+        return Results.NoContent();
+    }
 
     /// <summary>
     /// Idempotente por (usuario, workoutId):

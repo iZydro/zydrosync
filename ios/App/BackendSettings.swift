@@ -4,12 +4,19 @@ import Transport
 /// URL en UserDefaults (no es secreta); token en el Keychain.
 enum BackendSettings {
     static let endpointKey = "endpointURL"
-    static let defaultEndpoint = "https://api.zydrotrack.example/v1/workouts"
+    static let defaultEndpoint = "https://sync.isidrogilabert.com/v1/workouts"
+    static let loggedInEmailKey = "loggedInEmail"
     static let tokenStore = KeychainTokenStore()
 
     static var endpointText: String {
         get { UserDefaults.standard.string(forKey: endpointKey) ?? defaultEndpoint }
         set { UserDefaults.standard.set(newValue, forKey: endpointKey) }
+    }
+
+    /// Con quién se entró con ZydroLogin (no es secreto; el token va al Keychain).
+    static var loggedInEmail: String? {
+        get { UserDefaults.standard.string(forKey: loggedInEmailKey) }
+        set { UserDefaults.standard.set(newValue, forKey: loggedInEmailKey) }
     }
 
     static var hasToken: Bool {

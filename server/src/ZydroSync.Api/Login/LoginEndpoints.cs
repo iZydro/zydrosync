@@ -31,7 +31,7 @@ public static class LoginEndpoints
     private static readonly TimeSpan TransactionLifetime = TimeSpan.FromMinutes(10);
     private const string TransactionPurpose = "ZydroSync.Login.Transaction";
 
-    private sealed record Transaction(string State, string Verifier, bool Admin = false);
+    private sealed record Transaction(string State, string Verifier, bool Admin = false, AppLoginRequest? App = null);
 
     public static CookieOptions SessionCookie(ZydroLoginOptions options, TimeSpan maxAge) => new()
     {
@@ -61,6 +61,8 @@ public static class LoginEndpoints
         var group = app.MapGroup("/auth");
         group.MapGet("/status", StatusAsync);
         group.MapGet("/login", Login);
+        group.MapGet("/app/start", AppLogin.Start);
+        group.MapPost("/app/token", AppLogin.RedeemAsync).DisableAntiforgery();
         group.MapGet("/callback", CallbackAsync);
         group.MapPost("/logout", LogoutAsync);
         return app;
@@ -94,10 +96,21 @@ public static class LoginEndpoints
         {
             return Results.NotFound();
         }
+        return StartAuthorize(http, o, protection, prompt, admin == "1", app: null);
+    }
+
+    /// <summary>
+    /// Guarda el intento (state, code_verifier y, si viene de la app, su petición) cifrado en
+    /// una cookie de este navegador y redirige a ZydroLogin con PKCE S256.
+    /// </summary>
+    internal static IResult StartAuthorize(HttpContext http, ZydroLoginOptions o, IDataProtectionProvider protection,
+        string? prompt, bool admin, AppLoginRequest? app)
+    {
         var transaction = new Transaction(
             Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32)),
             Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(48)),
-            Admin: admin == "1");
+            Admin: admin,
+            App: app);
         var protectedValue = protection.CreateProtector(TransactionPurpose).ToTimeLimitedDataProtector()
             .Protect(JsonSerializer.Serialize(transaction), TransactionLifetime);
         http.Response.Cookies.Append(TransactionCookieName, protectedValue, TransactionCookie(o));
@@ -122,7 +135,8 @@ public static class LoginEndpoints
 
     private static async Task<IResult> CallbackAsync(HttpContext http, IOptions<ZydroLoginOptions> options,
         IDataProtectionProvider protection, ZydroLoginClient login, LoginSessions sessions, DirectoryDb db,
-        IOptions<ZydroSync.Api.Admin.AdminOptions> adminOptions, TimeProvider time, ILoggerFactory loggers, CancellationToken ct)
+        IOptions<ZydroSync.Api.Admin.AdminOptions> adminOptions, AppHandoffs handoffs, TimeProvider time, ILoggerFactory loggers,
+        CancellationToken ct)
     {
         var o = options.Value;
         if (!o.Enabled)
@@ -132,6 +146,7 @@ public static class LoginEndpoints
         var log = loggers.CreateLogger("ZydroSync.Login");
         var q = http.Request.Query;
         var home = "/";
+        AppLoginRequest? app = null;
 
         // 1. state: la cookie de este navegador, de este intento, sin caducar y del mismo valor.
         if (!http.Request.Cookies.TryGetValue(TransactionCookieName, out var stored))
@@ -157,6 +172,8 @@ public static class LoginEndpoints
         {
             home = "/admin/";
         }
+        // Desde aquí, los errores de un login de la app vuelven a la app (su redirect ya se validó).
+        app = transaction.App;
         // 2. iss (RFC 9207): la respuesta viene de NUESTRO proveedor, no de otro que se haga pasar.
         if (q.ContainsKey("iss") && q["iss"].ToString() != o.IssuerUri.AbsoluteUri)
         {
@@ -226,6 +243,20 @@ public static class LoginEndpoints
             log.LogInformation("Usuario {UserId} vinculado a su identidad de ZydroLogin", user.Id);
         }
 
+        // App: no hay sesión web. Los tokens de ZydroLogin no se necesitan (la app recibirá un
+        // token de dispositivo de ZydroSync): se revocan. Vuelve a la app con un código de un
+        // solo uso ligado a SU PKCE.
+        if (app is not null)
+        {
+            await RevokeAsync(login, tokens, ct);
+            var handoff = handoffs.Issue(user.Id, app);
+            log.LogInformation("Login de la app con ZydroLogin para el usuario {UserId}", user.Id);
+            return Results.Redirect(QueryHelpers.AddQueryString(app.RedirectUri, new Dictionary<string, string?>
+            {
+                ["code"] = handoff, ["state"] = app.State,
+            }));
+        }
+
         // Admin: el permiso concedido por ZydroLogin y el email en la lista privada del servidor.
         if (transaction.Admin && (!profile.Scopes.Contains(o.AdminScope) || !adminOptions.Value.IsAdminEmail(user.Email)))
         {
@@ -246,7 +277,12 @@ public static class LoginEndpoints
         log.LogInformation("Sesión {Kind} iniciada con ZydroLogin para el usuario {UserId}", transaction.Admin ? "de administración" : "web", user.Id);
         return Results.Redirect(home);
 
-        IResult Fail(string reason) => Results.Redirect($"{home}?login_error={reason}");
+        IResult Fail(string reason) => app is null
+            ? Results.Redirect($"{home}?login_error={reason}")
+            : Results.Redirect(QueryHelpers.AddQueryString(app.RedirectUri, new Dictionary<string, string?>
+            {
+                ["error"] = reason, ["state"] = app.State,
+            }));
     }
 
     private static async Task RevokeAsync(ZydroLoginClient login, LoginTokens tokens, CancellationToken ct)

@@ -41,6 +41,10 @@ final class AppModel {
     private(set) var oldestWorkoutStart: Date?
     /// Resultado de la última acción del histórico o de la comprobación con el servidor.
     private(set) var historyMessage: String?
+    /// Cuenta con la que se entró con ZydroLogin (nil: token manual o sin sesión).
+    private(set) var loggedInEmail = BackendSettings.loggedInEmail
+    private(set) var loginMessage: String?
+    private(set) var isLoggingIn = false
     var endpointText = BackendSettings.endpointText
     /// La URL que de verdad usa el envío (la guardada), que puede no ser la del campo.
     private(set) var savedEndpoint = BackendSettings.endpointText
@@ -222,6 +226,9 @@ final class AppModel {
             do {
                 try BackendSettings.tokenStore.write(tokenText)
                 tokenText = ""
+                // Token pegado a mano: ya no es la sesión de ZydroLogin.
+                BackendSettings.loggedInEmail = nil
+                loggedInEmail = nil
             } catch {
                 setupError = "No se pudo guardar el token en el Keychain: \(error)"
             }
@@ -238,6 +245,81 @@ final class AppModel {
     func deleteToken() {
         try? BackendSettings.tokenStore.write(nil)
         hasToken = false
+        BackendSettings.loggedInEmail = nil
+        loggedInEmail = nil
+    }
+
+    // MARK: ZydroLogin
+
+    /// Cliente de login para el servidor configurado (por defecto, sync.isidrogilabert.com).
+    private func loginClient() -> AppLoginClient? {
+        guard let endpoint = URL(string: savedEndpoint), let origin = AppLoginClient.origin(of: endpoint) else { return nil }
+        return AppLoginClient(baseURL: origin)
+    }
+
+    /// Paso 1: la URL que la vista abre en ASWebAuthenticationSession.
+    func beginLogin(chooseAccount: Bool) -> AppLoginClient.Attempt? {
+        guard let client = loginClient() else {
+            loginMessage = "La URL del servidor no es válida."
+            return nil
+        }
+        loginMessage = nil
+        isLoggingIn = true
+        return client.begin(deviceName: UIDevice.current.name, chooseAccount: chooseAccount)
+    }
+
+    /// Paso 2: la vuelta zydrosync://auth → canje → token de dispositivo al Keychain.
+    func completeLogin(callback: URL, attempt: AppLoginClient.Attempt) async {
+        defer { isLoggingIn = false }
+        guard let client = loginClient() else { return }
+        do {
+            let code = try AppLoginClient.code(from: callback, expectedState: attempt.state)
+            let result = try await client.redeem(code: code, verifier: attempt.pkce.verifier)
+            try BackendSettings.tokenStore.write(result.token)
+            BackendSettings.endpointText = result.uploadUrl.absoluteString
+            BackendSettings.loggedInEmail = result.email
+            savedEndpoint = BackendSettings.endpointText
+            endpointText = savedEndpoint
+            tokenText = ""
+            hasToken = true
+            loggedInEmail = result.email
+            loginMessage = nil
+            try? await queue?.resumeAfterCredentialsChange(now: Date())
+            await syncNow(manual: true)
+        } catch {
+            loginMessage = Self.describeLogin(error)
+        }
+    }
+
+    func loginCancelled(_ message: String?) {
+        isLoggingIn = false
+        loginMessage = message
+    }
+
+    /// Cerrar sesión: revoca el token de dispositivo en el servidor y lo borra del iPhone. La
+    /// cola se queda (se reanuda al volver a entrar).
+    func signOut() async {
+        if let token = (try? BackendSettings.tokenStore.read()) ?? nil, let client = loginClient() {
+            let revoked = await client.revoke(token: token)
+            loginMessage = revoked ? "Sesión cerrada: el token de este iPhone está revocado."
+                : "Sesión cerrada en el iPhone, pero no se pudo confirmar la revocación en el servidor (revísalo en el panel)."
+        }
+        deleteToken()
+    }
+
+    nonisolated static func describeLogin(_ error: any Error) -> String {
+        switch error as? AppLoginError {
+        case .server("no_account"): "Tu cuenta de Google no tiene usuario en ZydroSync."
+        case .server("access_denied"): "ZydroLogin no ha autorizado el acceso."
+        case .server("unavailable"): "ZydroLogin no responde ahora mismo. Inténtalo en un momento."
+        case .server("account_linked_elsewhere"): "Ese email ya está vinculado a otra cuenta de Google."
+        case let .server(code): "No se pudo entrar (\(code))."
+        case .stateMismatch: "La respuesta del login no corresponde a este intento. Vuelve a intentarlo."
+        case .rejected: "El servidor rechazó el inicio de sesión (¿caducó?). Vuelve a intentarlo."
+        case let .network(message): "Sin conexión con el servidor: \(message)"
+        case .missingCode, .invalidResponse: "Respuesta inesperada del servidor."
+        case nil: error.localizedDescription
+        }
     }
 
     func retry(_ id: UUID) async {

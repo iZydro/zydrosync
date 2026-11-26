@@ -41,6 +41,7 @@ builder.Services.Configure<ZydroLoginOptions>(builder.Configuration.GetSection("
 builder.Services.AddHttpClient(ZydroLoginClient.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(10));
 builder.Services.AddScoped<ZydroLoginClient>();
 builder.Services.AddScoped<LoginSessions>();
+builder.Services.AddSingleton<AppHandoffs>();
 // Data Protection cifra los tokens de las sesiones y la cookie temporal del login. Las claves
 // van al volumen de datos (persisten entre despliegues); la ruta se resuelve al usarlas, como
 // la de las bases de datos, para que los tests puedan cambiarla.

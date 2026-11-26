@@ -153,6 +153,29 @@ ZydroLogin (el login de ZydroTrack, con Google) es el proveedor de identidad. Zy
   test). Ojo: `Microsoft.AspNetCore.Hosting.Diagnostics` en `Information` escribiría la URL
   del callback con el código (de un solo uso y ya canjeado); por eso no se activa.
 
+### Login de la app iOS
+
+ZydroLogin solo admite clientes con secreto y una app no puede guardarlo, así que ZydroSync
+hace de intermediario (RFC 8252 + PKCE) y la app acaba con un **token de dispositivo propio**:
+
+1. La app genera su PKCE y abre en `ASWebAuthenticationSession`
+   `GET /auth/app/start?redirect_uri=zydrosync://auth&code_challenge=…&code_challenge_method=S256&state=…&device=…`.
+   Solo se acepta exactamente `ZydroLogin:AppRedirectUri` (`zydrosync://auth`); si no, 400 y
+   no se redirige a ningún sitio.
+2. Login web normal con ZydroLogin (mismas reglas: usuarios conocidos, vínculo por `sub`). No
+   se crea sesión web y los tokens de ZydroLogin se revocan al terminar.
+3. Vuelta a `zydrosync://auth?code=…&state=…`: código aleatorio, **un solo uso, 2 minutos**,
+   ligado al `code_challenge` de la app (en memoria, se guarda su SHA-256). Errores:
+   `zydrosync://auth?error=no_account&state=…`.
+4. `POST /auth/app/token` (formulario: `code`, `code_verifier`, `redirect_uri`) →
+   `{token, tokenId, email, uploadUrl}`. Un intento fallido consume el código. El token es
+   `device`, con nombre «<dispositivo> (ZydroLogin)», y se ve y revoca en el panel.
+5. «Cerrar sesión» en la app: `DELETE /v1/device/token` con ese token.
+
+Aunque otra app interceptara la vuelta `zydrosync://…`, sin el `code_verifier` el código no
+le sirve. Limitación: un token de dispositivo no caduca; si se retira a alguien de ZydroLogin,
+hay que revocar también sus tokens en el panel.
+
 Configuración (variables de entorno; en producción, `/home/ubuntu/zydrosync.env`, root 600):
 
 | Variable | Valor |

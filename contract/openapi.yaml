@@ -44,6 +44,11 @@ info:
     - la cookie de sesión `zs_session` de la web (ver `/auth/login` en el README del servidor).
     Los tokens de otras audiencias (p. ej. los de ZydroTrack) se rechazan.
 
+    **Login de la app.** La app no maneja tokens de ZydroLogin: abre `GET /auth/app/start`
+    (fuera de `/v1`, ver el README del servidor) con su PKCE, y canjea en
+    `POST /auth/app/token` el código de la vuelta `zydrosync://auth` por un token `device`.
+    "Cerrar sesión" lo revoca con `DELETE /device/token`.
+
     **Lectura incremental (importadores).** `GET /workouts?after=<serverId>` devuelve,
     ordenado por `serverId`, todo lo creado o actualizado después de ese cursor: una
     actualización asigna un `serverId` nuevo, así que reaparece. El importador guarda el
@@ -122,6 +127,15 @@ paths:
         '429': { $ref: '#/components/responses/RetryableProblem' }
         '500': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/RetryableProblem' }
+
+  /device/token:
+    delete:
+      operationId: revokeOwnDeviceToken
+      summary: El token de dispositivo se revoca a sí mismo ("Cerrar sesión" en la app)
+      responses:
+        '204': { description: Revocado. Las siguientes peticiones con él reciben 401. }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
 
   /workouts/{workoutId}:
     get:

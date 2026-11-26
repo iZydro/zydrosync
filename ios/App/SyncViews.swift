@@ -1,40 +1,75 @@
+import AuthenticationServices
 import SwiftUI
 import SyncCore
+import Transport
 
 struct ServerSection: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.webAuthenticationSession) private var webAuthenticationSession
     @State private var confirmDeleteToken = false
+    @State private var confirmSignOut = false
+    @State private var showManual = false
 
     var body: some View {
         @Bindable var model = model
         Section {
-            TextField("https://…/v1/workouts", text: $model.endpointText)
-                .keyboardType(.URL)
-                .textContentType(.URL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .submitLabel(.done)
-                .onSubmit { Task { await model.saveSettings() } }
-                .font(.footnote.monospaced())
-            SecureField(model.hasToken ? "Token guardado (escribe para cambiarlo)" : "Token Bearer", text: $model.tokenText)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .submitLabel(.done)
-                .onSubmit { Task { await model.saveSettings() } }
-            // Cada botón en su propia fila: en una List, dos botones en la misma fila se
-            // reparten mal los toques y "Guardar" podía no ejecutarse.
-            Button {
-                Task { await model.saveSettings() }
-            } label: {
-                Label(model.hasUnsavedSettings ? "Guardar cambios" : "Guardado",
-                      systemImage: model.hasUnsavedSettings ? "square.and.arrow.down" : "checkmark")
-            }
-            .disabled(!model.hasUnsavedSettings)
-            if model.hasToken {
-                Button("Borrar token", role: .destructive) { confirmDeleteToken = true }
-                    .confirmationDialog("¿Borrar el token de este iPhone?", isPresented: $confirmDeleteToken) {
-                        Button("Borrar token", role: .destructive) { model.deleteToken() }
+            if let email = model.loggedInEmail, model.hasToken {
+                LabeledContent("Conectado como") { Text(email).font(.footnote) }
+                Button("Cerrar sesión", role: .destructive) { confirmSignOut = true }
+                    .confirmationDialog("¿Cerrar sesión en este iPhone?", isPresented: $confirmSignOut, titleVisibility: .visible) {
+                        Button("Cerrar sesión", role: .destructive) { Task { await model.signOut() } }
+                    } message: {
+                        Text("Se revoca el token de este iPhone y deja de enviar carreras hasta que vuelvas a entrar. Lo pendiente se queda en la cola.")
                     }
+            } else {
+                Button {
+                    Task { await signIn(chooseAccount: false) }
+                } label: {
+                    HStack {
+                        Label("Entrar con ZydroLogin", systemImage: "person.badge.key")
+                        if model.isLoggingIn {
+                            Spacer()
+                            ProgressView()
+                        }
+                    }
+                }
+                .disabled(model.isLoggingIn)
+                Button("Entrar con otra cuenta") { Task { await signIn(chooseAccount: true) } }
+                    .disabled(model.isLoggingIn)
+            }
+            if let message = model.loginMessage {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+            }
+
+            DisclosureGroup("Servidor y token manual", isExpanded: $showManual) {
+                TextField("https://…/v1/workouts", text: $model.endpointText)
+                    .keyboardType(.URL)
+                    .textContentType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.done)
+                    .onSubmit { Task { await model.saveSettings() } }
+                    .font(.footnote.monospaced())
+                SecureField(model.hasToken ? "Token guardado (escribe para cambiarlo)" : "Token Bearer", text: $model.tokenText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.done)
+                    .onSubmit { Task { await model.saveSettings() } }
+                // Cada botón en su propia fila: en una List, dos botones en la misma fila se
+                // reparten mal los toques y "Guardar" podía no ejecutarse.
+                Button {
+                    Task { await model.saveSettings() }
+                } label: {
+                    Label(model.hasUnsavedSettings ? "Guardar cambios" : "Guardado",
+                          systemImage: model.hasUnsavedSettings ? "square.and.arrow.down" : "checkmark")
+                }
+                .disabled(!model.hasUnsavedSettings)
+                if model.hasToken {
+                    Button("Borrar token", role: .destructive) { confirmDeleteToken = true }
+                        .confirmationDialog("¿Borrar el token de este iPhone?", isPresented: $confirmDeleteToken) {
+                            Button("Borrar token", role: .destructive) { model.deleteToken() }
+                        }
+                }
             }
         } header: {
             Text("Servidor")
@@ -45,8 +80,23 @@ struct ServerSection: View {
                         .foregroundStyle(.orange)
                 }
                 Text("En uso: \(model.savedEndpoint)").font(.caption.monospaced())
-                Text("El token se guarda en el Keychain del iPhone, solo en este dispositivo.")
+                Text("Al entrar con ZydroLogin, este iPhone recibe su propio token, que se guarda en el Keychain. Puedes revocarlo desde el panel o con «Cerrar sesión».")
             }
+        }
+    }
+
+    /// ZydroLogin en una ASWebAuthenticationSession: la vuelta zydrosync://auth solo llega a
+    /// esta sesión, y el código de un solo uso solo vale con el PKCE de este intento.
+    private func signIn(chooseAccount: Bool) async {
+        guard let attempt = model.beginLogin(chooseAccount: chooseAccount) else { return }
+        do {
+            let callback = try await webAuthenticationSession.authenticate(
+                using: attempt.url, callbackURLScheme: AppLoginClient.callbackScheme, preferredBrowserSession: .shared)
+            await model.completeLogin(callback: callback, attempt: attempt)
+        } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
+            model.loginCancelled(nil)
+        } catch {
+            model.loginCancelled("No se pudo abrir el inicio de sesión: \(error.localizedDescription)")
         }
     }
 }

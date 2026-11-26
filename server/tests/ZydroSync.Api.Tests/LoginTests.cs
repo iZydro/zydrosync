@@ -618,3 +618,149 @@ public sealed class AdminLoginTests(AdminLoginApiFactory api) : IClassFixture<Ad
         Assert.Equal(HttpStatusCode.NotFound, (await token.GetAsync("/admin/api/users")).StatusCode);
     }
 }
+
+public sealed class AppLoginTests(LoginApiFactory api) : IClassFixture<LoginApiFactory>
+{
+    private const string AppRedirect = "zydrosync://auth";
+
+    private sealed record AppAttempt(HttpClient Browser, string Verifier, string State, string Location);
+
+    private static string Challenge(string verifier) =>
+        System.Buffers.Text.Base64Url.EncodeToString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.ASCII.GetBytes(verifier)));
+
+    /// <summary>Lo que hace la app: PKCE propio, ASWebAuthenticationSession, vuelta a zydrosync://auth.</summary>
+    private async Task<AppAttempt> AppSignInAsync(LoginProfile profile, string redirect = AppRedirect)
+    {
+        var verifier = System.Buffers.Text.Base64Url.EncodeToString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(48));
+        var state = System.Buffers.Text.Base64Url.EncodeToString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24));
+        var browser = api.Browser();
+        var start = await browser.GetAsync(QueryHelpers.AddQueryString("/auth/app/start", new Dictionary<string, string?>
+        {
+            ["redirect_uri"] = redirect, ["code_challenge"] = Challenge(verifier), ["code_challenge_method"] = "S256",
+            ["state"] = state, ["device"] = "iPhone de prueba",
+        }));
+        Assert.Equal(HttpStatusCode.Redirect, start.StatusCode);
+        var callback = api.Login.Authorize(start.Headers.Location!, profile)!;
+        var back = await browser.GetAsync(callback);
+        return new AppAttempt(browser, verifier, state, back.Headers.Location!.OriginalString);
+    }
+
+    private Task<HttpResponseMessage> RedeemAsync(string code, string verifier, string redirect = AppRedirect) =>
+        api.CreateClient().PostAsync("/auth/app/token", new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["code"] = code, ["code_verifier"] = verifier, ["redirect_uri"] = redirect,
+        }));
+
+    private static Dictionary<string, string> Query(string location) =>
+        QueryHelpers.ParseQuery(new Uri(location).Query).ToDictionary(p => p.Key, p => p.Value.ToString());
+
+    [Fact]
+    public async Task App_signs_in_and_gets_a_device_token_that_uploads()
+    {
+        var profile = new LoginProfile($"google-{Guid.NewGuid():N}", $"{Guid.NewGuid():N}@example.test");
+        await api.CreateUserAsync(profile.Email);
+        var revokedBefore = api.Login.Revoked.Count;
+
+        var attempt = await AppSignInAsync(profile);
+        var q = Query(attempt.Location);
+
+        Assert.StartsWith(AppRedirect + "?", attempt.Location);
+        Assert.Equal(attempt.State, q["state"]);
+        // Los tokens de ZydroLogin no se quedan vivos: la app no los necesita.
+        Assert.True(api.Login.Revoked.Count >= revokedBefore + 2);
+        // Ni sesión web en el navegador de la app.
+        Assert.Equal(JsonValueKind.Null, (await attempt.Browser.GetFromJsonAsync<JsonElement>("/auth/status")).GetProperty("user").ValueKind);
+
+        var response = await RedeemAsync(q["code"], attempt.Verifier);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var token = body.GetProperty("token").GetString()!;
+        Assert.StartsWith("zsd_", token);
+        Assert.Equal(profile.Email, body.GetProperty("email").GetString());
+        Assert.Equal("https://sync.test/v1/workouts", body.GetProperty("uploadUrl").GetString());
+
+        var id = Guid.NewGuid();
+        Assert.Equal(HttpStatusCode.Created, (await api.ClientWith(token).SendAsync(Payloads.PostGzip(id, Payloads.Valid(id)))).StatusCode);
+        var name = await api.WithDirectoryAsync(db => db.ApiTokens.Where(t => t.Prefix == token.Substring(0, 10)).Select(t => t.Name).SingleAsync());
+        Assert.Equal("iPhone de prueba (ZydroLogin)", name);
+    }
+
+    [Fact]
+    public async Task Code_is_single_use_and_needs_the_apps_verifier()
+    {
+        var profile = new LoginProfile($"google-{Guid.NewGuid():N}", $"{Guid.NewGuid():N}@example.test");
+        await api.CreateUserAsync(profile.Email);
+
+        var attempt = await AppSignInAsync(profile);
+        var code = Query(attempt.Location)["code"];
+
+        // Otra app que intercepte la vuelta no tiene el verifier: y el intento consume el código.
+        var wrong = await RedeemAsync(code, System.Buffers.Text.Base64Url.EncodeToString(new byte[48]));
+        Assert.Equal(HttpStatusCode.BadRequest, wrong.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await RedeemAsync(code, attempt.Verifier)).StatusCode);
+
+        var second = await AppSignInAsync(profile);
+        var code2 = Query(second.Location)["code"];
+        Assert.Equal(HttpStatusCode.OK, (await RedeemAsync(code2, second.Verifier)).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await RedeemAsync(code2, second.Verifier)).StatusCode); // reutilizado
+    }
+
+    [Fact]
+    public async Task Code_expires_after_two_minutes()
+    {
+        var profile = new LoginProfile($"google-{Guid.NewGuid():N}", $"{Guid.NewGuid():N}@example.test");
+        await api.CreateUserAsync(profile.Email);
+        var attempt = await AppSignInAsync(profile);
+
+        api.Clock.Advance(TimeSpan.FromMinutes(2.1));
+
+        Assert.Equal(HttpStatusCode.BadRequest, (await RedeemAsync(Query(attempt.Location)["code"], attempt.Verifier)).StatusCode);
+    }
+
+    [Theory]
+    [InlineData("https://evil.test/cb", "S256", true)]
+    [InlineData("zydrosync://otra", "S256", true)]
+    [InlineData(AppRedirect, "plain", true)]
+    [InlineData(AppRedirect, "S256", false)]
+    public async Task Start_rejects_unregistered_redirects_and_missing_pkce(string redirect, string method, bool withChallenge)
+    {
+        var response = await api.Browser().GetAsync(QueryHelpers.AddQueryString("/auth/app/start", new Dictionary<string, string?>
+        {
+            ["redirect_uri"] = redirect, ["code_challenge_method"] = method,
+            ["code_challenge"] = withChallenge ? Challenge("x".PadRight(43, 'x')) : null, ["state"] = "estado-de-la-app-123",
+        }));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Null(response.Headers.Location);
+    }
+
+    [Fact]
+    public async Task Unknown_identity_goes_back_to_the_app_with_an_error_and_no_code()
+    {
+        var attempt = await AppSignInAsync(new LoginProfile($"google-{Guid.NewGuid():N}", $"{Guid.NewGuid():N}@example.test"));
+        var q = Query(attempt.Location);
+
+        Assert.Equal("no_account", q["error"]);
+        Assert.Equal(attempt.State, q["state"]);
+        Assert.False(q.ContainsKey("code"));
+    }
+
+    [Fact]
+    public async Task Device_token_revokes_itself_on_sign_out()
+    {
+        var profile = new LoginProfile($"google-{Guid.NewGuid():N}", $"{Guid.NewGuid():N}@example.test");
+        var user = await api.CreateUserAsync(profile.Email);
+        var attempt = await AppSignInAsync(profile);
+        var token = (await (await RedeemAsync(Query(attempt.Location)["code"], attempt.Verifier)).Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("token").GetString()!;
+        var app = api.ClientWith(token);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await app.DeleteAsync("/v1/device/token")).StatusCode);
+        var id = Guid.NewGuid();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await app.SendAsync(Payloads.PostGzip(id, Payloads.Valid(id)))).StatusCode);
+        // Solo ese token: el resto del usuario sigue.
+        Assert.Equal(HttpStatusCode.OK, (await api.ClientWith(user.IntegrationToken).GetAsync("/v1/workouts")).StatusCode);
+        // Un token que no es de dispositivo no puede usar este endpoint.
+        Assert.Equal(HttpStatusCode.Forbidden, (await api.ClientWith(user.IntegrationToken).DeleteAsync("/v1/device/token")).StatusCode);
+    }
+}
