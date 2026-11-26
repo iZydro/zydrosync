@@ -117,3 +117,12 @@ button.ghost { border-color: transparent; color: var(--muted); }
 .secret { margin-bottom: 12px; border-color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, var(--panel)); }
 .secret code { flex: 1; padding: 8px 10px; border-radius: 7px; background: var(--bg); word-break: break-all; user-select: all; }
 .secret strong { display: block; margin-bottom: 8px; }
+
+a.button {
+  display: inline-block; font: inherit; padding: 6px 12px; border-radius: 7px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text); text-decoration: none;
+}
+a.button:hover { border-color: var(--accent); text-decoration: none; }
+a.button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.login:not(:last-child) { margin-bottom: 16px; }
+.login + .login { margin-top: 0; }

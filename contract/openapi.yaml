@@ -36,6 +36,14 @@ info:
     - `web` (`zsw_…`, web «Mis carreras»): solo lee.
     - `admin` (`zsa_…`): solo el panel de administración; aquí recibe 403.
 
+    **ZydroLogin.** La lectura (`GET /workouts…`) acepta también, en lugar de un token propio:
+    - un access token de ZydroLogin (`Authorization: Bearer <JWT>`) emitido para la audiencia
+      `zydrosync` con el permiso `zydrosync:workouts:read`, de un usuario de ZydroSync ya
+      vinculado (por su `sub`). Se valida en cada petición por introspección en ZydroLogin;
+      si ZydroLogin no responde, 503.
+    - la cookie de sesión `zs_session` de la web (ver `/auth/login` en el README del servidor).
+    Los tokens de otras audiencias (p. ej. los de ZydroTrack) se rechazan.
+
     **Lectura incremental (importadores).** `GET /workouts?after=<serverId>` devuelve,
     ordenado por `serverId`, todo lo creado o actualizado después de ese cursor: una
     actualización asigna un `serverId` nuevo, así que reaparece. El importador guarda el
@@ -159,6 +167,12 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
+      description: Token propio (zsd_/zsi_/zsw_) o access token de ZydroLogin (solo lectura).
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: zs_session
+      description: Sesión web iniciada con ZydroLogin (solo lectura).
 
   responses:
     Problem:

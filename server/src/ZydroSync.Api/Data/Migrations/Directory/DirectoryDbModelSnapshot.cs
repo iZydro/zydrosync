@@ -64,6 +64,55 @@ namespace ZydroSync.Api.Data.Migrations.Directory
                     b.ToTable("api_tokens", (string)null);
                 });
 
+            modelBuilder.Entity("ZydroSync.Api.Data.LoginSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AccessToken")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("AccessTokenExpiresAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("ExpiresAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("Hash")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<long>("LastSeenAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("RefreshToken")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Subject")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAt");
+
+                    b.HasIndex("Hash")
+                        .IsUnique();
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("login_sessions", (string)null);
+                });
+
             modelBuilder.Entity("ZydroSync.Api.Data.User", b =>
                 {
                     b.Property<Guid>("Id")
@@ -78,9 +127,19 @@ namespace ZydroSync.Api.Data.Migrations.Directory
                         .HasMaxLength(320)
                         .HasColumnType("TEXT");
 
+                    b.Property<long?>("LoginLinkedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("LoginSubject")
+                        .HasMaxLength(255)
+                        .HasColumnType("TEXT");
+
                     b.HasKey("Id");
 
                     b.HasIndex("Email")
+                        .IsUnique();
+
+                    b.HasIndex("LoginSubject")
                         .IsUnique();
 
                     b.ToTable("users", (string)null);
@@ -97,8 +156,21 @@ namespace ZydroSync.Api.Data.Migrations.Directory
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("ZydroSync.Api.Data.LoginSession", b =>
+                {
+                    b.HasOne("ZydroSync.Api.Data.User", "User")
+                        .WithMany("LoginSessions")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("ZydroSync.Api.Data.User", b =>
                 {
+                    b.Navigation("LoginSessions");
+
                     b.Navigation("Tokens");
                 });
 #pragma warning restore 612, 618

@@ -46,5 +46,11 @@ public sealed class TokenService(DirectoryDb db, TimeProvider time)
         return (token, secret);
     }
 
+    /// <summary>"Bearer zsd_…" / zsi_ / zsw_ / zsa_: un token propio (y no uno de ZydroLogin).</summary>
+    public static bool IsOwnToken(string authorizationHeader) =>
+        authorizationHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+        && authorizationHeader.AsSpan(7).TrimStart() is var token
+        && (token.StartsWith(DevicePrefix) || token.StartsWith(IntegrationPrefix) || token.StartsWith(WebPrefix) || token.StartsWith(AdminPrefix));
+
     public static byte[] Hash(string secret) => SHA256.HashData(Encoding.UTF8.GetBytes(secret));
 }

@@ -8,6 +8,7 @@ deploy/deploy.sh cli users list     # cualquier comando de la CLI, en producció
 deploy/deploy.sh backup             # copia ahora (además de la diaria)
 deploy/deploy.sh rollback           # vuelve a la versión anterior
 
+deploy/deploy.sh login-register     # registra ZydroSync en ZydroLogin (usuarios de ZydroSync) y lo aplica
 deploy/tunnel.sh                    # túnel SSH al panel /admin y lo abre en el navegador
 deploy/tunnel.sh down | status
 ```
@@ -51,6 +52,25 @@ la raíz del repo (ignorada por git) y a `sync.isidrogilabert.com`. Se cambia co
   (`Caddyfile.bak-zydrosync-<versión>`). Se reescribe en el sitio y no se sustituye, porque
   un fichero suelto montado en Docker deja de verse dentro si cambia de inodo.
 - `/admin` da 404 también en Caddy: el panel no se publica.
+
+## ZydroLogin
+
+`deploy/deploy.sh login-register`:
+1. Lee los emails de los usuarios de ZydroSync (más `ZS_ADMIN_EMAIL`, por defecto
+   `isidrogilabert@gmail.com`).
+2. En el servidor, con el mismo candado que los despliegues de ZydroTrack: copia
+   `zydrologin.env` (`.bak-zydrosync-<fecha>`), sustituye solo el registro `zydrosync` de
+   `ZYDROLOGIN_CLIENTS` (los demás se conservan) y escribe `/home/ubuntu/zydrosync.env` con
+   las credenciales. El secreto se genera allí (64 caracteres) y se reutiliza en las
+   siguientes ejecuciones; nunca se imprime ni sale del servidor.
+3. Recrea el contenedor `zydrologin` (las variables se fijan al crearlo) y espera a que el
+   descubrimiento publique `zydrosync:workouts:read`. Si no, restaura el contenedor y el env.
+   **El login de ZydroTrack se corta unos segundos**; las sesiones se conservan (volumen).
+4. Recrea `zydrosync` para que lea `zydrosync.env`.
+
+Repetirlo al dar de alta usuarios en ZydroSync: es lo que les permite entrar en ZydroLogin.
+El `configure.py` de ZydroTrack conserva los clientes ajenos al redesplegar, así que su
+despliegue no borra este registro.
 
 ## Panel de administración (túnel)
 

@@ -12,6 +12,10 @@
 #   deploy/deploy.sh status             versión en marcha, memoria y copias
 #   deploy/deploy.sh backup             lanza la copia ahora (además de la diaria)
 #   deploy/deploy.sh rollback           vuelve a la versión anterior
+#   deploy/deploy.sh login-register     registra ZydroSync en ZydroLogin con los correos de los
+#                                       usuarios de ZydroSync (más ZS_ADMIN_EMAIL) y lo aplica.
+#                                       Repetir tras dar de alta usuarios nuevos. Reinicia
+#                                       ZydroLogin unos segundos (también el login de ZydroTrack).
 #
 # Configurable por variables de entorno: ZS_HOST, ZS_SSH_KEY, ZS_DOMAIN, ZS_CADDYFILE.
 #
@@ -29,6 +33,7 @@ ZS_HOST="${ZS_HOST:-ubuntu@54.246.27.40}"
 ZS_SSH_KEY="${ZS_SSH_KEY:-$REPO/LightsailDefaultKey-eu-west-1.pem}"
 ZS_DOMAIN="${ZS_DOMAIN:-sync.isidrogilabert.com}"
 ZS_CADDYFILE="${ZS_CADDYFILE:-/home/ubuntu/zydrotrack/deploy/Caddyfile}"
+ZS_ADMIN_EMAIL="${ZS_ADMIN_EMAIL:-isidrogilabert@gmail.com}"
 
 SSH_OPTS=(-i "$ZS_SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10)
 
@@ -106,6 +111,7 @@ echo "Versión:  $($D inspect zydrosync --format '{{index .Config.Labels "zydros
 prev="$($D inspect zydrosync-previous --format '{{index .Config.Labels "zydrosync.release"}}' 2>/dev/null)"
 echo "Anterior: ${prev:-—}"
 $D stats --no-stream --format 'Memoria:  {{.MemUsage}}  CPU {{.CPUPerc}}' zydrosync 2>/dev/null || true
+echo "ZydroLogin: $(sudo -n test -f /home/ubuntu/zydrosync.env && echo configurado || echo 'sin configurar (deploy.sh login-register)')"
 echo "Copias:"
 $D run --rm -v zydrosync-data:/data:ro alpine:3.20 sh -c 'ls -1 /data/backups 2>/dev/null | tail -5; du -sh /data/users /data/backups 2>/dev/null'
 systemctl list-timers zydrosync-backup.timer --no-pager | sed -n 2p
@@ -119,5 +125,11 @@ case "${1:-}" in
   status) status ;;
   backup) container_cli backup /data/backups --keep 14 ;;
   rollback) remote bash zydrosync/remote.sh rollback ;;
+  login-register)
+    # Solo usuarios conocidos por ZydroSync (y siempre el administrador).
+    emails="$(container_cli users list | awk '{print $1}')"
+    # shellcheck disable=SC2086
+    remote bash zydrosync/remote.sh login-register "$ZS_ADMIN_EMAIL" $emails
+    curl -fsS "https://$ZS_DOMAIN/auth/status" && echo ;;
   *) fail "Comando desconocido: $1 (mira la cabecera de deploy/deploy.sh)" ;;
 esac

@@ -1,5 +1,8 @@
 // «Mis carreras»: los entrenamientos del propio usuario, leídos de la API pública
-// (/v1/workouts) con un token de tipo web, de solo lectura.
+// (/v1/workouts). Dos formas de entrar:
+//  - ZydroLogin: la sesión vive en el servidor; el navegador solo tiene una cookie HttpOnly
+//    que JavaScript no puede leer. Aquí no se maneja ningún token.
+//  - Un token web (zsw_…) pegado a mano, guardado solo en esta pestaña.
 import { h, setCrumbs, fmtDateTime, fmtKm, fmtDuration, fmtHours, fmtPace, paceOf, downloadJson, loginForm } from "/shared/ui.js";
 import { workoutView } from "/shared/workout-view.js";
 
@@ -9,6 +12,9 @@ const appEl = document.getElementById("app");
 const crumbsEl = document.getElementById("crumbs");
 const logoutEl = document.getElementById("logout");
 let token = sessionStorage.getItem(TOKEN_KEY);
+let session = null;  // { email } con sesión de ZydroLogin
+let loginEnabled = false;
+let statusChecked = false;
 let workouts = null; // resúmenes, del más reciente al más antiguo
 let year = null;     // filtro de la lista
 let current = null;  // vista con recursos que liberar (el mapa)
@@ -24,9 +30,12 @@ const crumbs = (...items) => setCrumbs(crumbsEl, items);
 class AuthError extends Error {}
 
 async function api(path) {
-  const res = await fetch(path, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
-  if (res.status === 401) throw new AuthError("Token no válido o revocado.");
-  if (res.status === 403) throw new AuthError("Ese token no sirve aquí: usa uno de tipo web (zsw_…).");
+  // Con sesión, la cookie va sola (mismo origen); con token, la cabecera.
+  const headers = { Accept: "application/json" };
+  if (!session) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(path, { headers });
+  if (res.status === 401) throw new AuthError(session ? "La sesión ha caducado o se ha cerrado. Vuelve a entrar." : "Token no válido o revocado.");
+  if (res.status === 403) throw new AuthError(session ? "Tu sesión no tiene permiso para ver carreras." : "Ese token no sirve aquí: usa uno de tipo web (zsw_…).");
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch { /* sin cuerpo */ }
@@ -51,30 +60,85 @@ async function loadWorkouts(force) {
 
 // ---------- sesión ----------
 
-function logout(message) {
+/** ¿Hay sesión de ZydroLogin? Una vez por carga de página. */
+async function checkStatus() {
+  if (statusChecked) return;
+  statusChecked = true;
+  try {
+    const res = await fetch("/auth/status", { headers: { Accept: "application/json" } });
+    if (res.status === 503) throw new Error("ZydroLogin no responde ahora mismo; inténtalo en un momento.");
+    const status = await res.json();
+    loginEnabled = status.loginEnabled;
+    session = status.user;
+  } catch (e) {
+    statusChecked = false;
+    throw e;
+  }
+}
+
+/** Sale de la vista; no toca ZydroLogin (la sesión del servidor ya no vale o no existía). */
+function forget(message) {
   token = null;
+  session = null;
   workouts = null;
   sessionStorage.removeItem(TOKEN_KEY);
   logoutEl.hidden = true;
   renderLogin(message);
 }
 
+async function logout() {
+  if (!session) return forget();
+  // Cierra la sesión de ZydroSync y revoca sus tokens. La de ZydroLogin (hasta 8 h) sigue
+  // abierta: ZydroLogin no permite cerrarla desde aquí.
+  let message = "Has salido de ZydroSync. Tu sesión de ZydroLogin sigue abierta: «Entrar» te dejará pasar sin pedir Google. Para usar otra cuenta, «Entrar con otra cuenta».";
+  try {
+    const res = await fetch("/auth/logout", { method: "POST" });
+    const body = res.ok ? await res.json() : null;
+    if (body && !body.tokensRevoked) message += " (No se pudo confirmar la revocación de los tokens en ZydroLogin.)";
+  } catch {
+    message = "No se pudo contactar con el servidor para cerrar la sesión.";
+  }
+  forget(message);
+}
+
 logoutEl.addEventListener("click", () => logout());
+
+const LOGIN_ERRORS = {
+  invalid_state: "El inicio de sesión no se pudo verificar (¿caducó o se abrió en otra pestaña?). Vuelve a intentarlo.",
+  invalid_issuer: "La respuesta no venía de ZydroLogin. Vuelve a intentarlo.",
+  access_denied: "ZydroLogin no ha autorizado el acceso: tu cuenta no tiene permiso para ZydroSync.",
+  login_failed: "No se pudo completar el inicio de sesión. Vuelve a intentarlo.",
+  unavailable: "ZydroLogin no responde ahora mismo. Inténtalo en un momento.",
+  insufficient_scope: "ZydroLogin no ha concedido el acceso a tus carreras (o el email no está verificado).",
+  no_account: "Tu cuenta de Google no tiene usuario en ZydroSync. Pide que te den de alta.",
+  account_linked_elsewhere: "Ese email de ZydroSync ya está vinculado a otra cuenta de Google.",
+};
 
 function renderLogin(message) {
   crumbs();
-  render(loginForm({
-    title: "Mis carreras",
+  const options = [];
+  if (loginEnabled) {
+    options.push(h("div", { class: "panel pad login" },
+      h("h1", {}, "Mis carreras"),
+      h("p", {}, "Entra con tu cuenta de ZydroLogin (la de ZydroTrack, con Google)."),
+      h("div", { class: "actions" },
+        h("a", { class: "button primary", href: "/auth/login" }, "Entrar con ZydroLogin"),
+        h("a", { class: "button", href: "/auth/login?prompt=login" }, "Entrar con otra cuenta")),
+      message ? h("div", { class: "error" }, message) : null));
+  }
+  const tokenForm = loginForm({
+    title: loginEnabled ? "O con un token web" : "Mis carreras",
     intro: "Pega tu token web (zsw_…). Es de solo lectura: con él se ven tus carreras, pero no se pueden subir ni borrar.",
     placeholder: "zsw_…",
-    message,
+    message: loginEnabled ? null : message,
     onSubmit(value) {
       token = value;
       sessionStorage.setItem(TOKEN_KEY, token);
       location.hash = "#/";
       route();
     },
-  }));
+  });
+  render(...options, tokenForm);
 }
 
 // ---------- vistas ----------
@@ -156,7 +220,21 @@ async function renderWorkout(workoutId) {
 // ---------- rutas ----------
 
 async function route() {
-  if (!token) return renderLogin();
+  // Vuelta de un login fallido: mensaje y URL limpia. Nunca se reintenta solo (sin bucles).
+  const params = new URLSearchParams(location.search);
+  const loginError = params.get("login_error");
+  if (loginError) history.replaceState(null, "", "/" + location.hash);
+  try {
+    await checkStatus();
+  } catch (e) {
+    return render(h("div", { class: "panel pad error" }, e.message));
+  }
+  if (loginError) {
+    session = null;
+    return renderLogin(LOGIN_ERRORS[loginError] || LOGIN_ERRORS.login_failed);
+  }
+  if (!session && !token) return renderLogin();
+  logoutEl.textContent = session ? `Salir (${session.email})` : "Salir";
   logoutEl.hidden = false;
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   try {
@@ -165,7 +243,7 @@ async function route() {
     crumbs({ text: "Mis carreras", href: "#/" });
     render(h("div", { class: "panel empty" }, "No encontrado."));
   } catch (e) {
-    if (e instanceof AuthError) return logout(e.message);
+    if (e instanceof AuthError) return forget(e.message);
     render(h("div", { class: "panel pad error" }, `Error: ${e.message}`));
   }
 }

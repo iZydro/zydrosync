@@ -14,6 +14,7 @@ src/ZydroSync.Api/
   Workouts/WorkoutIngest.cs  POST /v1/workouts: validación, gzip con límites, idempotencia
   Workouts/WorkoutRead.cs    GET /v1/workouts (por serverId) y GET /v1/workouts/{id}
   Web/StaticSites.cs         cabeceras de seguridad y páginas estáticas (/ y /shared)
+  Login/                     ZydroLogin: /auth/*, sesiones cifradas, introspección
   Cli/AdminCli.cs            users / tokens / workouts / backup / migrate
   Admin/AdminPanel.cs        panel web /admin + API /admin/api (solo token admin, desactivado por defecto)
   wwwroot/web/               web «Mis carreras» (/): HTML + JS sin compilación
@@ -110,13 +111,67 @@ El secreto de un token solo se muestra al crearlo. En la base de datos solo qued
 
 ## Web «Mis carreras» (`/`)
 
-`https://sync.isidrogilabert.com/` (en local, http://localhost:8088/): cada usuario pega su
-token `web` y ve **sus** carreras: totales por año, lista por meses y el detalle de cada una
-(mapa, parciales por km, gráficas y descarga del JSON). No puede subir ni borrar.
+`https://sync.isidrogilabert.com/` (en local, http://localhost:8088/): cada usuario entra con
+**ZydroLogin** (o pega un token `web`) y ve **sus** carreras: totales por año, lista por
+meses y el detalle de cada una (mapa, parciales por km, gráficas y descarga del JSON). No
+puede subir ni borrar.
 
 Lee la API pública (`GET /v1/workouts`, `GET /v1/workouts/{id}`), la misma que usará el
 importador de ZydroTrack. El detalle de la carrera es código común con el panel
 (`wwwroot/shared/`), así que los dos muestran lo mismo.
+
+## Inicio de sesión con ZydroLogin
+
+ZydroLogin (el login de ZydroTrack, con Google) es el proveedor de identidad. ZydroSync es un
+**cliente confidencial**: el navegador nunca ve un token ni el secreto.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /auth/login[?prompt=login]` | `state` y `code_verifier` aleatorios en una cookie cifrada (10 min, HttpOnly, solo para `/auth/callback`) y redirección a `authorize` con PKCE S256. `prompt=login`: «entrar con otra cuenta». |
+| `GET /auth/callback` | Comprueba `state` (tiempo constante) e `iss`; canjea el código **en el backend** (secreto, callback exacto, `code_verifier`); valida el perfil con `userinfo` (`sub`, email verificado, audiencia y permiso); crea la sesión. Errores → `/?login_error=<código>`, sin reintentos automáticos. |
+| `POST /auth/logout` | Exige `Origin` propio. Revoca refresh y access token en ZydroLogin y borra la sesión. |
+| `GET /auth/status` | `{loginEnabled, user: {email} \| null}`. Nunca devuelve tokens. |
+
+- **Usuarios:** solo entran los que existen en ZydroSync. El primer login vincula el usuario
+  por **email verificado** y guarda su `sub` (el identificador de Google); después, el
+  usuario es ese `sub`. Un email ya vinculado a otro `sub` no se reasigna.
+- **Sesión:** tabla `login_sessions` en `directory.db`. El navegador tiene una cookie opaca
+  (`zs_session`, 256 bits, HttpOnly, Secure, SameSite=Lax); la tabla guarda su SHA-256 y los
+  tokens cifrados con Data Protection (claves en `<datos>/keys`). Access token de 15 min;
+  se renueva un minuto antes de caducar, con un candado por sesión (el refresh token rota y
+  solo vale una vez); siempre se guarda el refresh token nuevo. Si la renovación falla, la
+  sesión se borra y la web pide entrar de nuevo.
+- **Cada petición se valida por introspección** (`active`, `iss`, audiencia `zydrosync`,
+  permiso `zydrosync:workouts:read`, vigencia, `sub` vinculado). Sin caché: una revocación se
+  nota al instante. Si ZydroLogin no responde → 503 (nunca acceso).
+- **Bearer:** la API de lectura acepta también access tokens de ZydroLogin con esa audiencia
+  y ese permiso. Los de ZydroTrack (audiencia `zydrotrack`) se rechazan.
+- **Logout local ≠ cierre del SSO.** Cerrar sesión en ZydroSync revoca sus tokens, pero la
+  sesión de ZydroLogin (8 h) sigue abierta: «Entrar» no vuelve a pedir Google. ZydroLogin no
+  tiene endpoint para cerrarla; «Entrar con otra cuenta» fuerza Google (`prompt=login`).
+- **Nada sensible en los logs:** tokens, códigos, cookies y secretos no se registran (hay un
+  test). Ojo: `Microsoft.AspNetCore.Hosting.Diagnostics` en `Information` escribiría la URL
+  del callback con el código (de un solo uso y ya canjeado); por eso no se activa.
+
+Configuración (variables de entorno; en producción, `/home/ubuntu/zydrosync.env`, root 600):
+
+| Variable | Valor |
+|---|---|
+| `ZydroLogin__Issuer` | `https://zydrotrack.isidrogilabert.com/login/` |
+| `ZydroLogin__ClientId` | `zydrosync` |
+| `ZydroLogin__ClientSecret` | aleatorio, ≥ 32 caracteres (lo genera `deploy.sh login-register`) |
+| `ZydroLogin__CallbackUri` | `https://sync.isidrogilabert.com/auth/callback` |
+
+Sin ellas no hay login con ZydroLogin y todo funciona con tokens propios. Registro en
+ZydroLogin (`ZYDROLOGIN_CLIENTS` de `/home/ubuntu/zydrologin.env`):
+
+```json
+{"Id":"zydrosync","Secret":"<el mismo secreto>","RedirectUris":["https://sync.isidrogilabert.com/auth/callback"],
+ "Audience":"zydrosync","Scopes":["zydrosync:workouts:read"],"AllowedEmails":["<usuarios de ZydroSync>"]}
+```
+
+Pruebas: `LoginTests` (con un ZydroLogin simulado) y, contra el ZydroLogin real en local,
+`ZYDROLOGIN_DLL=… python3 ../tools/zydrologin_integration.py`.
 
 ## Panel de administración (`/admin`)
 

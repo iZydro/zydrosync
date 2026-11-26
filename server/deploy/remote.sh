@@ -16,6 +16,11 @@ VOL=zydrosync-data
 CADDY=caddy
 KEEP_RELEASES=3
 ADMIN_PORT=18088
+# Configuración privada (credenciales de ZydroLogin). Solo root la lee; nunca va a git.
+PRIVATE_ENV=/home/ubuntu/zydrosync.env
+LOGIN_ENV=/home/ubuntu/zydrologin.env
+LOGIN_CALLBACK=https://sync.isidrogilabert.com/auth/callback
+LOGIN_ISSUER=https://zydrotrack.isidrogilabert.com/login/
 D="sudo -n docker"
 
 log() { printf '\033[1m==> %s\033[0m\n' "$*"; }
@@ -59,6 +64,8 @@ ensure_volume() {
 }
 
 run_container() {
+  local private=()
+  if sudo -n test -f "$PRIVATE_ENV"; then private=(--env-file "$PRIVATE_ENV"); fi
   # Desde fuera solo se llega por Caddy. El puerto publicado lo está únicamente en el
   # loopback del servidor (127.0.0.1:$ADMIN_PORT), para el túnel SSH del panel de
   # administración (deploy/tunnel.sh). El panel solo responde a Host localhost
@@ -70,6 +77,7 @@ run_container() {
     --network "$NET" \
     -p "127.0.0.1:$ADMIN_PORT:8080" \
     -e Admin__Enabled=true \
+    "${private[@]}" \
     --memory 256m --cpus 1 \
     --read-only --tmpfs /tmp:rw,size=64m \
     --cap-drop ALL --security-opt no-new-privileges \
@@ -146,7 +154,18 @@ deploy() {
   ensure_network
   ensure_volume
 
-  local had_previous=0
+  swap_to "$release"
+
+  configure_caddy "$domain" "$caddyfile" "$dir/Caddyfile.snippet" "$release"
+  install_backup_timer "$dir"
+  install -m 755 "$dir/remote.sh" "$BASE/remote.sh"
+  cleanup
+  log "Desplegada $release"
+}
+
+# Arranca la versión indicada en lugar de la que esté en marcha; si no responde, vuelve a la anterior.
+swap_to() {
+  local release="$1" had_previous=0
   if exists "$NAME"; then
     log "Parando la versión en marcha"
     $D rm -f "$NAME-previous" >/dev/null 2>&1 || true
@@ -154,7 +173,6 @@ deploy() {
     $D rename "$NAME" "$NAME-previous"
     had_previous=1
   fi
-
   log "Arrancando $release"
   run_container "$release"
   if ! healthy; then
@@ -168,12 +186,6 @@ deploy() {
     fi
     fail "La versión nueva no responde en /healthz."
   fi
-
-  configure_caddy "$domain" "$caddyfile" "$dir/Caddyfile.snippet" "$release"
-  install_backup_timer "$dir"
-  install -m 755 "$dir/remote.sh" "$BASE/remote.sh"
-  cleanup
-  log "Desplegada $release"
 }
 
 rollback() {
@@ -193,8 +205,101 @@ rollback() {
   log "En marcha $previous (la otra queda parada como $NAME-broken)"
 }
 
+# Registra (o actualiza) ZydroSync como cliente de ZydroLogin y aplica la configuración:
+#  1. zydrologin.env: añade/sustituye el registro "zydrosync" en ZYDROLOGIN_CLIENTS,
+#     conservando los demás; secreto aleatorio de 64 caracteres (se reutiliza si ya existe).
+#  2. zydrosync.env: las credenciales para el backend de ZydroSync.
+#  3. Recrea el contenedor zydrologin con la configuración nueva (sus variables se fijan al
+#     crearlo) y comprueba el descubrimiento por HTTPS. Si falla, lo restaura todo.
+#  4. Recrea zydrosync para que lea zydrosync.env.
+# Ningún secreto se imprime ni sale del servidor.
+login_register() {
+  [ $# -ge 1 ] || fail "Uso: remote.sh login-register <email>..."
+  # El mismo candado que los despliegues y copias de ZydroTrack: no tocar ZydroLogin a la vez.
+  exec 8>/home/ubuntu/.zydrotrack-deploy.lock
+  flock -n 8 || fail "ZydroTrack está desplegando o haciendo una copia; inténtalo en un rato."
+  sudo -n test -f "$LOGIN_ENV" || fail "No existe $LOGIN_ENV"
+  local stamp; stamp="$(date -u +%Y%m%d-%H%M%S)"
+  local login_backup="$LOGIN_ENV.bak-zydrosync-$stamp"
+  sudo -n cp -p "$LOGIN_ENV" "$login_backup"
+  if sudo -n test -f "$PRIVATE_ENV"; then sudo -n cp -p "$PRIVATE_ENV" "$PRIVATE_ENV.bak-$stamp"; fi
+
+  log "Registro del cliente zydrosync en ZydroLogin"
+  sudo -n python3 - "$LOGIN_ENV" "$PRIVATE_ENV" "$LOGIN_ISSUER" "$LOGIN_CALLBACK" "$@" <<'PY'
+import json, os, secrets, sys, tempfile
+login_path, sync_path, issuer, callback, *emails = sys.argv[1:]
+
+def read_env(path):
+    if not os.path.exists(path):
+        return []
+    return open(path).read().splitlines()
+
+def write_env(path, lines):
+    # Atómico y 600 root desde el primer byte: el secreto nunca queda legible para otros.
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".zydrosync-")
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+login = read_env(login_path)
+index = next(i for i, line in enumerate(login) if line.startswith("ZYDROLOGIN_CLIENTS="))
+clients = json.loads(login[index].split("=", 1)[1])
+private = dict(line.split("=", 1) for line in read_env(sync_path) if "=" in line and not line.startswith("#"))
+secret = private.get("ZydroLogin__ClientSecret") or secrets.token_urlsafe(48)
+assert len(secret) >= 32
+allowed = sorted({e.strip().lower() for e in emails if "@" in e})
+others = [c for c in clients if c.get("Id") != "zydrosync"]
+registration = {"Id": "zydrosync", "Secret": secret, "RedirectUris": [callback], "Audience": "zydrosync",
+                "Scopes": ["zydrosync:workouts:read"], "AllowedEmails": allowed}
+login[index] = "ZYDROLOGIN_CLIENTS=" + json.dumps(others + [registration], separators=(",", ":"))
+write_env(login_path, login)
+private.update({"ZydroLogin__Issuer": issuer, "ZydroLogin__ClientId": "zydrosync",
+                "ZydroLogin__ClientSecret": secret, "ZydroLogin__CallbackUri": callback})
+write_env(sync_path, [f"{k}={v}" for k, v in private.items()])
+print("Clientes:", ", ".join(c["Id"] for c in others + [registration]), "| zydrosync permite:", ", ".join(allowed))
+PY
+
+  local image old candidate
+  image="$($D inspect zydrologin --format '{{.Config.Image}}')"
+  old="$($D inspect zydrologin --format '{{.Id}}')"
+  $D rm -f zydrologin-candidate-zs >/dev/null 2>&1 || true
+  # Los mismos parámetros que activate.sh de ZydroTrack, con el env actualizado.
+  candidate="$($D create --name zydrologin-candidate-zs --restart unless-stopped --network zydrotrack-net \
+    --env-file "$LOGIN_ENV" -v zydrologin-data:/data "$image")"
+  log "Reiniciando zydrologin con el registro nuevo"
+  $D stop -t 20 "$old" >/dev/null
+  $D rename "$old" "zydrologin-previous-zs-$stamp"
+  $D rename "$candidate" zydrologin
+  $D start zydrologin >/dev/null
+
+  local ok=0
+  for _ in $(seq 1 30); do
+    if curl -fsS -m 5 "${LOGIN_ISSUER}.well-known/openid-configuration" 2>/dev/null | grep -q '"zydrosync:workouts:read"'; then
+      ok=1; break
+    fi
+    sleep 2
+  done
+  if [ "$ok" != 1 ]; then
+    echo "--- últimas líneas de zydrologin ---" >&2
+    $D logs --tail 20 zydrologin 2>&1 | grep -viE "secret|token" >&2 || true
+    $D rm -f zydrologin >/dev/null
+    $D rename "zydrologin-previous-zs-$stamp" zydrologin
+    $D start zydrologin >/dev/null
+    sudo -n cp -p "$login_backup" "$LOGIN_ENV"
+    fail "ZydroLogin no arrancó con el registro nuevo. Restaurados el contenedor y $LOGIN_ENV."
+  fi
+  log "ZydroLogin publica zydrosync:workouts:read"
+
+  local release
+  release="$($D inspect "$NAME" --format '{{index .Config.Labels "zydrosync.release"}}')"
+  swap_to "$release"
+  log "ZydroSync usa ZydroLogin (versión $release). El contenedor anterior de login queda como zydrologin-previous-zs-$stamp"
+}
+
 case "${1:-}" in
   deploy) shift; [ $# -eq 3 ] || fail "Uso: remote.sh deploy <release> <dominio> <caddyfile>"; deploy "$@" ;;
   rollback) rollback ;;
-  *) fail "Uso: remote.sh deploy|rollback" ;;
+  login-register) shift; login_register "$@" ;;
+  *) fail "Uso: remote.sh deploy|rollback|login-register" ;;
 esac

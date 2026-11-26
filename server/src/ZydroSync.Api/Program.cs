@@ -1,10 +1,12 @@
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
 using ZydroSync.Api.Admin;
 using ZydroSync.Api.Auth;
 using ZydroSync.Api.Cli;
 using ZydroSync.Api.Data;
+using ZydroSync.Api.Login;
 using ZydroSync.Api.Web;
 using ZydroSync.Api.Workouts;
 
@@ -33,14 +35,47 @@ builder.Services.AddScoped<TokenService>();
 builder.Services.Configure<IngestOptions>(builder.Configuration.GetSection("Ingest"));
 builder.Services.Configure<AdminOptions>(builder.Configuration.GetSection("Admin"));
 
-builder.Services.AddAuthentication(BearerTokenHandler.SchemeName)
-    .AddScheme<AuthenticationSchemeOptions, BearerTokenHandler>(BearerTokenHandler.SchemeName, null);
+// ZydroLogin: inicio de sesión web y tokens de ZydroLogin (ver Login/). Sin ClientId/Secret
+// configurados, no existe y solo valen los tokens propios.
+builder.Services.Configure<ZydroLoginOptions>(builder.Configuration.GetSection("ZydroLogin"));
+builder.Services.AddHttpClient(ZydroLoginClient.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(10));
+builder.Services.AddScoped<ZydroLoginClient>();
+builder.Services.AddScoped<LoginSessions>();
+// Data Protection cifra los tokens de las sesiones y la cookie temporal del login. Las claves
+// van al volumen de datos (persisten entre despliegues); la ruta se resuelve al usarlas, como
+// la de las bases de datos, para que los tests puedan cambiarla.
+builder.Services.AddDataProtection().SetApplicationName("ZydroSync");
+builder.Services.AddOptions<Microsoft.AspNetCore.DataProtection.KeyManagement.KeyManagementOptions>()
+    .Configure<DataStore, ILoggerFactory>((o, store, loggers) => o.XmlRepository =
+        new Microsoft.AspNetCore.DataProtection.Repositories.FileSystemXmlRepository(
+            new DirectoryInfo(Path.Combine(store.DataDirectory, "keys")), loggers));
+
+// Un esquema que elige: tokens propios (zsd_, zsi_, zsw_, zsa_) → BearerTokenHandler; otro
+// Bearer o la cookie de sesión → ZydroLogin (introspección).
+const string AutoScheme = "Auto";
+builder.Services.AddAuthentication(AutoScheme)
+    .AddPolicyScheme(AutoScheme, null, o => o.ForwardDefaultSelector = ctx =>
+    {
+        string header = ctx.Request.Headers.Authorization.ToString();
+        if (TokenService.IsOwnToken(header)) return BearerTokenHandler.SchemeName;
+        if (header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+            || ctx.Request.Cookies.ContainsKey(LoginSessions.CookieName)) return ZydroLoginHandler.SchemeName;
+        return BearerTokenHandler.SchemeName;
+    })
+    .AddScheme<AuthenticationSchemeOptions, BearerTokenHandler>(BearerTokenHandler.SchemeName, null)
+    .AddScheme<AuthenticationSchemeOptions, ZydroLoginHandler>(ZydroLoginHandler.SchemeName, null);
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy(Policies.Device, p => p.RequireClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Device)))
     .AddPolicy(Policies.Integration, p => p.RequireClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Integration)))
     .AddPolicy(Policies.Admin, p => p.RequireClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Admin)))
-    .AddPolicy(Policies.Reader, p => p.RequireClaim(BearerTokenHandler.KindClaim,
-        nameof(TokenKind.Device), nameof(TokenKind.Integration), nameof(TokenKind.Web)));
+    .AddPolicy(Policies.Reader, p => p.RequireAssertion(ctx =>
+        ctx.User.HasClaim(c => c.Type == BearerTokenHandler.KindClaim
+            && c.Value is nameof(TokenKind.Device) or nameof(TokenKind.Integration) or nameof(TokenKind.Web))
+        // Con ZydroLogin, además, el permiso concreto en el scope del token.
+        || (ctx.User.HasClaim(BearerTokenHandler.KindClaim, "Login")
+            && ctx.User.HasClaim(ZydroLoginHandler.ScopeClaim, ctx.Resource is HttpContext http
+                ? http.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptions<ZydroLoginOptions>>().Value.ReadScope
+                : "zydrosync:workouts:read"))));
 
 builder.Services.AddProblemDetails();
 
@@ -98,6 +133,7 @@ app.MapGet("/healthz", async (DirectoryDb db, CancellationToken ct) =>
     await db.Database.CanConnectAsync(ct) ? Results.Ok(new { status = "ok" }) : Results.StatusCode(503));
 app.MapWorkoutIngest();
 app.MapWorkoutRead();
+app.MapLoginEndpoints();
 app.MapAdminPanel();
 app.MapStaticSites();
 
