@@ -9,19 +9,26 @@ namespace ZydroSync.Api.Admin;
 
 public sealed class AdminOptions
 {
-    /// <summary>
-    /// Desactivado por defecto: en producción ni siquiera existen las rutas /admin (404).
-    /// Si se activa, lo recomendado es no publicarlo en el proxy y entrar por túnel SSH.
-    /// </summary>
+    /// <summary>Desactivado por defecto: sin él, las rutas /admin no existen (404).</summary>
     public bool Enabled { get; set; }
 
     /// <summary>
-    /// Solo responde a peticiones con Host localhost / 127.0.0.1 / [::1], es decir, las que
-    /// llegan por el túnel SSH. Las que pasan por Caddy llevan Host sync.isidrogilabert.com
-    /// (Caddy solo enruta ese dominio) y reciben 404, aunque Caddy ya las corta antes.
-    /// Activado en producción; en desarrollo da igual.
+    /// Los tokens admin (zsa_) solo valen en peticiones con Host localhost / 127.0.0.1 / [::1],
+    /// es decir, por el túnel SSH. Desde internet (Host del dominio, vía Caddy) /admin/api da
+    /// 404 a esos tokens: un zsa_ filtrado no sirve fuera del servidor. El acceso por la web es
+    /// con ZydroLogin (ver <see cref="Emails"/>).
     /// </summary>
     public bool LocalhostOnly { get; set; }
+
+    /// <summary>
+    /// Administradores por la web: usuarios de ZydroSync con estos emails que entran con
+    /// ZydroLogin pidiendo además el permiso zydrosync:admin. Configuración privada del
+    /// servidor (Admin__Emails__0=…): no se puede conceder desde el panel.
+    /// </summary>
+    public string[] Emails { get; set; } = [];
+
+    public bool IsAdminEmail(string? email) =>
+        email is not null && Emails.Any(e => string.Equals(e.Trim(), email, StringComparison.OrdinalIgnoreCase));
 }
 
 public sealed record CreateUserRequest(string Email);
@@ -46,8 +53,8 @@ public sealed record AdminWorkoutDto(Guid WorkoutId, long Seq, string Sport, Dat
 public static class AdminPanel
 {
     /// <summary>
-    /// Va al principio de la cadena, antes de la autenticación: desde fuera del túnel, /admin
-    /// da 404 (ni siquiera 401) y no se consulta ningún token.
+    /// Antes de la autenticación: un token admin (zsa_) desde fuera del túnel recibe 404 sin
+    /// llegar a consultarse. Las sesiones de ZydroLogin siguen su camino (política Admin).
     /// </summary>
     public static WebApplication UseAdminLocalhostOnly(this WebApplication app)
     {
@@ -56,7 +63,8 @@ public static class AdminPanel
         {
             app.Use(async (ctx, next) =>
             {
-                if (ctx.Request.Path.StartsWithSegments("/admin") && !IsLocalhost(ctx.Request.Host.Host))
+                if (ctx.Request.Path.StartsWithSegments("/admin/api") && !IsLocalhost(ctx.Request.Host.Host)
+                    && ctx.Request.Headers.Authorization.ToString().Contains(TokenService.AdminPrefix, StringComparison.Ordinal))
                 {
                     ctx.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;

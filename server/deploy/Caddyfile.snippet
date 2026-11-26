@@ -6,8 +6,8 @@ __DOMAIN__ {
 		max_size 10MB
 	}
 	header Strict-Transport-Security "max-age=31536000"
-	# El panel de administración no se publica (en producción ni existe).
-	respond /admin* 404
+	# /admin: el panel se sirve (HTML y JS); su API exige sesión de administrador de
+	# ZydroLogin. Los tokens admin (zsa_) solo valen por el túnel SSH.
 	reverse_proxy zydrosync:8080
 }
 # --- fin ZydroSync ---

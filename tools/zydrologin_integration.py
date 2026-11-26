@@ -109,11 +109,12 @@ def follow(session, url, stop_prefix):
     raise RuntimeError("Demasiadas redirecciones")
 
 
-def browser_login(email, prompt=None):
+def browser_login(email, prompt=None, admin=False):
     """Login web completo. Devuelve (sesión del navegador, Location final de ZydroSync)."""
     CURRENT["email"] = email
     b = requests.Session()
-    _, callback = follow(b, SYNC + "/auth/login" + ("?prompt=login" if prompt else ""), CALLBACK)
+    params = {k: v for k, v in {"prompt": "login" if prompt else None, "admin": "1" if admin else None}.items() if v}
+    _, callback = follow(b, SYNC + "/auth/login" + ("?" + urllib.parse.urlencode(params) if params else ""), CALLBACK)
     r = b.get(callback, allow_redirects=False)
     return b, r.headers.get("Location")
 
@@ -144,7 +145,8 @@ try:
         log = open(pathlib.Path(tmp) / "services.log", "w")
         clients = [
             {"Id": "zydrosync", "Secret": SECRET_SYNC, "RedirectUris": [CALLBACK], "Audience": "zydrosync",
-             "Scopes": ["zydrosync:workouts:read"], "AllowedEmails": ["ana@example.test", "bea@example.test", "sin-cuenta@example.test"]},
+             "Scopes": ["zydrosync:workouts:read", "zydrosync:admin"],
+             "AllowedEmails": ["ana@example.test", "bea@example.test", "sin-cuenta@example.test"]},
             {"Id": "zydrotrack", "Secret": SECRET_TRACK, "RedirectUris": [SYNC + "/track"], "Audience": "zydrotrack",
              "Scopes": ["zydrotrack:session"], "AllowedEmails": ["ana@example.test"]},
         ]
@@ -158,7 +160,9 @@ try:
 
         sync_env = {"ASPNETCORE_ENVIRONMENT": "Production", "ASPNETCORE_URLS": SYNC, "Storage__DataDirectory": tmp + "/sync",
                     "ZydroLogin__Issuer": ISSUER, "ZydroLogin__ClientId": "zydrosync", "ZydroLogin__ClientSecret": SECRET_SYNC,
-                    "ZydroLogin__CallbackUri": CALLBACK}
+                    "ZydroLogin__CallbackUri": CALLBACK,
+                    # Como en producción: panel activo, tokens admin solo por localhost, Ana es admin.
+                    "Admin__Enabled": "true", "Admin__LocalhostOnly": "true", "Admin__Emails__0": "ana@example.test"}
         cli(sync_env, "users", "add", "ana@example.test")
         cli(sync_env, "users", "add", "bea@example.test")
         ana_device = cli(sync_env, "tokens", "create", "ana@example.test", "device")
@@ -251,6 +255,23 @@ try:
         check(ana.get(SYNC + "/v1/workouts").status_code == 401, "tras el logout no hay acceso")
         _, location = browser_login("ana@example.test")
         check(location == "/", "volver a entrar tras el logout (por el SSO, sin bucles)")
+
+        # 10. Panel de administración por la web.
+        check(ana.get(SYNC + "/admin/api/users").status_code in (401, 403), "sin sesión de admin, el panel no responde datos")
+        web_ana, _ = browser_login("ana@example.test")
+        check(web_ana.get(SYNC + "/admin/api/users").status_code == 403, "la sesión normal del admin no administra (falta el permiso)")
+        admin, location = browser_login("ana@example.test", admin=True)
+        check(location == "/admin/", "login de administrador: vuelve al panel")
+        users = admin.get(SYNC + "/admin/api/users")
+        check(users.status_code == 200 and {u["email"] for u in users.json()} == {"ana@example.test", "bea@example.test"},
+              "el administrador ve todos los usuarios")
+        check(admin.get(SYNC + "/auth/status").json()["user"]["isAdmin"], "/auth/status marca la sesión como admin")
+        check(admin.post(SYNC + "/admin/api/users", json={"email": "nuevo@example.test"}).status_code == 403,
+              "cambios del panel sin Origin rechazados (CSRF)")
+        created = admin.post(SYNC + "/admin/api/users", json={"email": "nuevo@example.test"}, headers={"Origin": SYNC})
+        check(created.status_code == 201, "el administrador crea usuarios con Origin propio")
+        _, location = browser_login("bea@example.test", admin=True)
+        check(location == "/admin/?login_error=not_admin", "un usuario normal no puede entrar como administrador")
 
         services_log = (pathlib.Path(tmp) / "services.log").read_text()
         check(SECRET_SYNC not in services_log and cookie not in services_log and tokens["access_token"] not in services_log,

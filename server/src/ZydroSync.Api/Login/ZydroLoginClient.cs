@@ -20,12 +20,15 @@ public sealed class ZydroLoginOptions
     public string Audience { get; set; } = "zydrosync";
     /// <summary>Permiso para leer los entrenamientos propios. Los permisos empiezan por la audiencia.</summary>
     public string ReadScope { get; set; } = "zydrosync:workouts:read";
+    /// <summary>Solo se pide al entrar al panel de administración; además hace falta ser admin (Admin:Emails).</summary>
+    public string AdminScope { get; set; } = "zydrosync:admin";
 
     public bool Enabled =>
         !string.IsNullOrWhiteSpace(ClientId) && !string.IsNullOrWhiteSpace(ClientSecret) && !string.IsNullOrWhiteSpace(CallbackUri);
 
-    /// <summary>Lo que se pide al autorizar: identidad, renovación y el permiso propio.</summary>
-    public string RequestedScopes => $"openid profile email offline_access {ReadScope}";
+    /// <summary>Lo que se pide al autorizar: identidad, renovación y los permisos propios mínimos.</summary>
+    public string RequestedScopes(bool admin) =>
+        $"openid profile email offline_access {ReadScope}" + (admin ? $" {AdminScope}" : "");
 
     public Uri IssuerUri => new(Issuer.TrimEnd('/') + "/");
     public Uri Endpoint(string path) => new(IssuerUri, path);

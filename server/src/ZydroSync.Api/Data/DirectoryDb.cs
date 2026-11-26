@@ -53,6 +53,8 @@ public sealed class LoginSession
     public DateTimeOffset LastSeenAt { get; set; }
     /// <summary>Caducidad del refresh token: pasado esto, hay que volver a entrar.</summary>
     public DateTimeOffset ExpiresAt { get; set; }
+    /// <summary>Sesión del panel de administración (permiso zydrosync:admin): dura como mucho 12 h.</summary>
+    public bool Admin { get; set; }
 }
 
 public sealed class ApiToken

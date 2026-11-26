@@ -215,21 +215,20 @@ public sealed class AdminTunnelTests(TunnelAdminApiFactory api) : IClassFixture<
     }
 
     [Fact]
-    public async Task Panel_answers_through_the_tunnel_only()
+    public async Task Admin_tokens_only_work_through_the_tunnel()
     {
         var owner = await api.CreateUserAsync();
         var admin = api.ClientWith(await api.CreateTokenAsync(owner.Id, TokenKind.Admin));
 
         Assert.Equal(HttpStatusCode.OK, (await admin.SendAsync(Get("/admin/api/users", "localhost:18088"))).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await admin.SendAsync(Get("/admin/api/users", "127.0.0.1:18088"))).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await api.CreateClient().SendAsync(Get("/admin/", "localhost:18088"))).StatusCode);
 
-        // Por Caddy (Host del dominio público): 404 aunque el token sea admin válido.
+        // Por Caddy (Host del dominio público): un zsa_ no sirve, aunque sea válido.
         Assert.Equal(HttpStatusCode.NotFound, (await admin.SendAsync(Get("/admin/api/users", "sync.isidrogilabert.com"))).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await api.CreateClient().SendAsync(Get("/admin/", "sync.isidrogilabert.com"))).StatusCode);
-        // Sin token y desde fuera: 404, no 401 (no revela que existe).
-        Assert.Equal(HttpStatusCode.NotFound, (await api.CreateClient().SendAsync(Get("/admin/api/users", "sync.isidrogilabert.com"))).StatusCode);
-        // El resto del servidor sigue respondiendo con el Host público.
+        // Sin credenciales, desde fuera: 401 (el acceso web es con ZydroLogin).
+        Assert.Equal(HttpStatusCode.Unauthorized, (await api.CreateClient().SendAsync(Get("/admin/api/users", "sync.isidrogilabert.com"))).StatusCode);
+        // La página (HTML y JS, sin datos) se sirve: la protección está en la API.
+        Assert.Equal(HttpStatusCode.OK, (await api.CreateClient().SendAsync(Get("/admin/", "sync.isidrogilabert.com"))).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await api.CreateClient().SendAsync(Get("/healthz", "sync.isidrogilabert.com"))).StatusCode);
     }
 }

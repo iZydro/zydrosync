@@ -214,7 +214,7 @@ rollback() {
 #  4. Recrea zydrosync para que lea zydrosync.env.
 # Ningún secreto se imprime ni sale del servidor.
 login_register() {
-  [ $# -ge 1 ] || fail "Uso: remote.sh login-register <email>..."
+  [ $# -ge 2 ] || fail "Uso: remote.sh login-register <email admin> <email>..."
   # El mismo candado que los despliegues y copias de ZydroTrack: no tocar ZydroLogin a la vez.
   exec 8>/home/ubuntu/.zydrotrack-deploy.lock
   flock -n 8 || fail "ZydroTrack está desplegando o haciendo una copia; inténtalo en un rato."
@@ -227,7 +227,8 @@ login_register() {
   log "Registro del cliente zydrosync en ZydroLogin"
   sudo -n python3 - "$LOGIN_ENV" "$PRIVATE_ENV" "$LOGIN_ISSUER" "$LOGIN_CALLBACK" "$@" <<'PY'
 import json, os, secrets, sys, tempfile
-login_path, sync_path, issuer, callback, *emails = sys.argv[1:]
+login_path, sync_path, issuer, callback, admin_email, *emails = sys.argv[1:]
+emails.append(admin_email)
 
 def read_env(path):
     if not os.path.exists(path):
@@ -251,13 +252,16 @@ assert len(secret) >= 32
 allowed = sorted({e.strip().lower() for e in emails if "@" in e})
 others = [c for c in clients if c.get("Id") != "zydrosync"]
 registration = {"Id": "zydrosync", "Secret": secret, "RedirectUris": [callback], "Audience": "zydrosync",
-                "Scopes": ["zydrosync:workouts:read"], "AllowedEmails": allowed}
+                "Scopes": ["zydrosync:workouts:read", "zydrosync:admin"], "AllowedEmails": allowed}
 login[index] = "ZYDROLOGIN_CLIENTS=" + json.dumps(others + [registration], separators=(",", ":"))
 write_env(login_path, login)
 private.update({"ZydroLogin__Issuer": issuer, "ZydroLogin__ClientId": "zydrosync",
-                "ZydroLogin__ClientSecret": secret, "ZydroLogin__CallbackUri": callback})
+                "ZydroLogin__ClientSecret": secret, "ZydroLogin__CallbackUri": callback,
+                # Administrador por la web (panel /admin con ZydroLogin).
+                "Admin__Emails__0": admin_email.strip().lower()})
 write_env(sync_path, [f"{k}={v}" for k, v in private.items()])
-print("Clientes:", ", ".join(c["Id"] for c in others + [registration]), "| zydrosync permite:", ", ".join(allowed))
+print("Clientes:", ", ".join(c["Id"] for c in others + [registration]), "| zydrosync permite:", ", ".join(allowed),
+      "| permisos:", ", ".join(registration["Scopes"]), "| admin:", admin_email)
 PY
 
   local image old candidate
@@ -275,7 +279,7 @@ PY
 
   local ok=0
   for _ in $(seq 1 30); do
-    if curl -fsS -m 5 "${LOGIN_ISSUER}.well-known/openid-configuration" 2>/dev/null | grep -q '"zydrosync:workouts:read"'; then
+    if curl -fsS -m 5 "${LOGIN_ISSUER}.well-known/openid-configuration" 2>/dev/null | grep -q '"zydrosync:admin"'; then
       ok=1; break
     fi
     sleep 2
@@ -289,7 +293,7 @@ PY
     sudo -n cp -p "$login_backup" "$LOGIN_ENV"
     fail "ZydroLogin no arrancó con el registro nuevo. Restaurados el contenedor y $LOGIN_ENV."
   fi
-  log "ZydroLogin publica zydrosync:workouts:read"
+  log "ZydroLogin publica los permisos de ZydroSync"
 
   local release
   release="$($D inspect "$NAME" --format '{{index .Config.Labels "zydrosync.release"}}')"

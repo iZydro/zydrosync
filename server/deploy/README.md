@@ -51,7 +51,8 @@ la raíz del repo (ignorada por git) y a `sync.isidrogilabert.com`. Se cambia co
   dentro: el despliegue lo reescribe. Antes de cambiarlo guarda una copia
   (`Caddyfile.bak-zydrosync-<versión>`). Se reescribe en el sitio y no se sustituye, porque
   un fichero suelto montado en Docker deja de verse dentro si cambia de inodo.
-- `/admin` da 404 también en Caddy: el panel no se publica.
+- `/admin` se publica: su API exige sesión de administrador de ZydroLogin (ver el README del
+  servidor). Los tokens `zsa_` solo valen por el túnel.
 
 ## ZydroLogin
 
@@ -72,7 +73,14 @@ Repetirlo al dar de alta usuarios en ZydroSync: es lo que les permite entrar en 
 El `configure.py` de ZydroTrack conserva los clientes ajenos al redesplegar, así que su
 despliegue no borra este registro.
 
-## Panel de administración (túnel)
+## Panel de administración
+
+Por la web: https://sync.isidrogilabert.com/admin/ › *Entrar como administrador*. El
+administrador es `Admin__Emails__0` en `/home/ubuntu/zydrosync.env` (lo pone
+`login-register` con `ZS_ADMIN_EMAIL`), y el registro de ZydroLogin incluye el permiso
+`zydrosync:admin`.
+
+### Por túnel (alternativa)
 
 ```bash
 deploy/deploy.sh cli tokens create tu@email admin "panel"   # una vez; guarda el zsa_…

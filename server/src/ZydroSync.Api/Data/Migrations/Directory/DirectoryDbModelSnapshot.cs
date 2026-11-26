@@ -77,6 +77,9 @@ namespace ZydroSync.Api.Data.Migrations.Directory
                     b.Property<long>("AccessTokenExpiresAt")
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("Admin")
+                        .HasColumnType("INTEGER");
+
                     b.Property<long>("CreatedAt")
                         .HasColumnType("INTEGER");
 

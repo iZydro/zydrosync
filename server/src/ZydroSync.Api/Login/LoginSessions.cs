@@ -11,7 +11,7 @@ namespace ZydroSync.Api.Login;
 public sealed class SessionInvalidException : Exception;
 
 /// <summary>Sesión resuelta: el access token vigente ya descifrado, solo en memoria.</summary>
-public sealed record ActiveSession(Guid Id, Guid UserId, string Subject, string AccessToken);
+public sealed record ActiveSession(Guid Id, Guid UserId, string Subject, string AccessToken, bool Admin);
 
 /// <summary>
 /// Sesiones web con ZydroLogin, guardadas en directory.db. La cookie lleva 256 bits
@@ -26,6 +26,8 @@ public sealed class LoginSessions(DirectoryDb db, ZydroLoginClient login, IDataP
     private static readonly TimeSpan RefreshMargin = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan DefaultRefreshLifetime = TimeSpan.FromDays(7);
     private static readonly TimeSpan LastSeenResolution = TimeSpan.FromMinutes(5);
+    /// <summary>Una sesión de administración no se alarga renovando: pasado esto, otra vez a ZydroLogin.</summary>
+    public static readonly TimeSpan AdminLifetime = TimeSpan.FromHours(12);
 
     /// <summary>
     /// Un candado por sesión para renovar: el refresh token rota, así que dos peticiones
@@ -38,7 +40,7 @@ public sealed class LoginSessions(DirectoryDb db, ZydroLoginClient login, IDataP
     public static byte[] Hash(string cookieValue) => SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(cookieValue));
 
     /// <summary>Crea la sesión y devuelve el valor de la cookie (lo único que conoce el navegador).</summary>
-    public async Task<string> CreateAsync(Guid userId, string subject, LoginTokens tokens, CancellationToken ct)
+    public async Task<string> CreateAsync(Guid userId, string subject, LoginTokens tokens, bool admin, CancellationToken ct)
     {
         var cookie = Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32));
         var now = time.GetUtcNow();
@@ -53,7 +55,8 @@ public sealed class LoginSessions(DirectoryDb db, ZydroLoginClient login, IDataP
             AccessTokenExpiresAt = tokens.AccessTokenExpiresAt,
             CreatedAt = now,
             LastSeenAt = now,
-            ExpiresAt = now + (tokens.RefreshToken is null ? tokens.AccessTokenExpiresAt - now : tokens.RefreshTokenLifetime ?? DefaultRefreshLifetime),
+            ExpiresAt = Cap(admin, now, now + (tokens.RefreshToken is null ? tokens.AccessTokenExpiresAt - now : tokens.RefreshTokenLifetime ?? DefaultRefreshLifetime)),
+            Admin = admin,
         });
         await db.SaveChangesAsync(ct);
         return cookie;
@@ -103,7 +106,7 @@ public sealed class LoginSessions(DirectoryDb db, ZydroLoginClient login, IDataP
             session.LastSeenAt = now;
             await db.SaveChangesAsync(ct);
         }
-        return new ActiveSession(session.Id, session.UserId, session.Subject, Protector.Unprotect(session.AccessToken));
+        return new ActiveSession(session.Id, session.UserId, session.Subject, Protector.Unprotect(session.AccessToken), session.Admin);
     }
 
     /// <summary>Cierre de sesión local: revoca en ZydroLogin los tokens de esta sesión y la borra.</summary>
@@ -167,11 +170,14 @@ public sealed class LoginSessions(DirectoryDb db, ZydroLoginClient login, IDataP
         if (tokens.RefreshToken is not null)
         {
             session.RefreshToken = Protector.Protect(tokens.RefreshToken);
-            session.ExpiresAt = now + (tokens.RefreshTokenLifetime ?? DefaultRefreshLifetime);
+            session.ExpiresAt = Cap(session.Admin, session.CreatedAt, now + (tokens.RefreshTokenLifetime ?? DefaultRefreshLifetime));
         }
         session.AccessTokenExpiresAt = tokens.AccessTokenExpiresAt;
         await db.SaveChangesAsync(ct);
     }
+
+    private static DateTimeOffset Cap(bool admin, DateTimeOffset createdAt, DateTimeOffset expiresAt) =>
+        admin && expiresAt > createdAt + AdminLifetime ? createdAt + AdminLifetime : expiresAt;
 
     private async Task DeleteLocalAsync(LoginSession session, CancellationToken ct)
     {

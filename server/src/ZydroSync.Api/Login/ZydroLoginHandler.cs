@@ -22,6 +22,7 @@ public sealed class ZydroLoginHandler(
     ILoggerFactory logger,
     UrlEncoder encoder,
     IOptions<ZydroLoginOptions> loginOptions,
+    IOptions<ZydroSync.Api.Admin.AdminOptions> adminOptions,
     ZydroLoginClient login,
     LoginSessions sessions,
     DirectoryDb db) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
@@ -29,6 +30,8 @@ public sealed class ZydroLoginHandler(
     public const string SchemeName = "ZydroLogin";
     public const string ScopeClaim = "scope";
     public const string SessionClaim = "zs:session";
+    /// <summary>Administrador por la web: sesión de admin + permiso zydrosync:admin + email en Admin:Emails.</summary>
+    public const string AdminClaim = "zs:admin";
     public const string UnavailableItem = "zydrologin.unavailable";
 
     protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
@@ -114,6 +117,13 @@ public sealed class ZydroLoginHandler(
         foreach (var scope in result.Scopes)
         {
             identity.AddClaim(new(ScopeClaim, scope));
+        }
+        // Solo con sesión de navegador (no con un Bearer suelto), pedida como admin, con el
+        // permiso concedido por ZydroLogin y con el email en la lista privada del servidor.
+        if (session is { Admin: true } && result.Scopes.Contains(loginOptions.Value.AdminScope)
+            && adminOptions.Value.IsAdminEmail(user.Email))
+        {
+            identity.AddClaim(new(AdminClaim, "true"));
         }
         return AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName));
     }

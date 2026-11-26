@@ -31,7 +31,7 @@ public static class LoginEndpoints
     private static readonly TimeSpan TransactionLifetime = TimeSpan.FromMinutes(10);
     private const string TransactionPurpose = "ZydroSync.Login.Transaction";
 
-    private sealed record Transaction(string State, string Verifier);
+    private sealed record Transaction(string State, string Verifier, bool Admin = false);
 
     public static CookieOptions SessionCookie(ZydroLoginOptions options, TimeSpan maxAge) => new()
     {
@@ -80,12 +80,14 @@ public static class LoginEndpoints
         return Results.Ok(new
         {
             loginEnabled = true,
-            user = result.Principal is { } user ? new { email = user.FindFirstValue(ClaimTypes.Email) } : null,
+            user = result.Principal is { } user
+                ? new { email = user.FindFirstValue(ClaimTypes.Email), isAdmin = user.HasClaim(ZydroLoginHandler.AdminClaim, "true") }
+                : null,
         });
     }
 
     private static IResult Login(HttpContext http, IOptions<ZydroLoginOptions> options, IDataProtectionProvider protection,
-        string? prompt)
+        string? prompt, string? admin)
     {
         var o = options.Value;
         if (!o.Enabled)
@@ -94,7 +96,8 @@ public static class LoginEndpoints
         }
         var transaction = new Transaction(
             Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32)),
-            Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(48)));
+            Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(48)),
+            Admin: admin == "1");
         var protectedValue = protection.CreateProtector(TransactionPurpose).ToTimeLimitedDataProtector()
             .Protect(JsonSerializer.Serialize(transaction), TransactionLifetime);
         http.Response.Cookies.Append(TransactionCookieName, protectedValue, TransactionCookie(o));
@@ -104,7 +107,7 @@ public static class LoginEndpoints
             ["client_id"] = o.ClientId,
             ["redirect_uri"] = o.CallbackUri,
             ["response_type"] = "code",
-            ["scope"] = o.RequestedScopes,
+            ["scope"] = o.RequestedScopes(transaction.Admin),
             ["state"] = transaction.State,
             ["code_challenge"] = Base64Url.EncodeToString(SHA256.HashData(Encoding.ASCII.GetBytes(transaction.Verifier))),
             ["code_challenge_method"] = "S256",
@@ -119,7 +122,7 @@ public static class LoginEndpoints
 
     private static async Task<IResult> CallbackAsync(HttpContext http, IOptions<ZydroLoginOptions> options,
         IDataProtectionProvider protection, ZydroLoginClient login, LoginSessions sessions, DirectoryDb db,
-        TimeProvider time, ILoggerFactory loggers, CancellationToken ct)
+        IOptions<ZydroSync.Api.Admin.AdminOptions> adminOptions, TimeProvider time, ILoggerFactory loggers, CancellationToken ct)
     {
         var o = options.Value;
         if (!o.Enabled)
@@ -128,6 +131,7 @@ public static class LoginEndpoints
         }
         var log = loggers.CreateLogger("ZydroSync.Login");
         var q = http.Request.Query;
+        var home = "/";
 
         // 1. state: la cookie de este navegador, de este intento, sin caducar y del mismo valor.
         if (!http.Request.Cookies.TryGetValue(TransactionCookieName, out var stored))
@@ -148,6 +152,10 @@ public static class LoginEndpoints
         if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(transaction.State), Encoding.UTF8.GetBytes(q["state"].ToString())))
         {
             return Fail("invalid_state");
+        }
+        if (transaction.Admin)
+        {
+            home = "/admin/";
         }
         // 2. iss (RFC 9207): la respuesta viene de NUESTRO proveedor, no de otro que se haga pasar.
         if (q.ContainsKey("iss") && q["iss"].ToString() != o.IssuerUri.AbsoluteUri)
@@ -218,12 +226,27 @@ public static class LoginEndpoints
             log.LogInformation("Usuario {UserId} vinculado a su identidad de ZydroLogin", user.Id);
         }
 
-        var cookie = await sessions.CreateAsync(user.Id, profile.Subject, tokens, ct);
-        http.Response.Cookies.Append(LoginSessions.CookieName, cookie, SessionCookie(o, TimeSpan.FromDays(7)));
-        log.LogInformation("Sesión iniciada con ZydroLogin para el usuario {UserId}", user.Id);
-        return Results.Redirect("/");
+        // Admin: el permiso concedido por ZydroLogin y el email en la lista privada del servidor.
+        if (transaction.Admin && (!profile.Scopes.Contains(o.AdminScope) || !adminOptions.Value.IsAdminEmail(user.Email)))
+        {
+            await RevokeAsync(login, tokens, ct);
+            log.LogWarning("Intento de entrar como administrador sin serlo: usuario {UserId}", user.Id);
+            return Fail("not_admin");
+        }
 
-        static IResult Fail(string reason) => Results.Redirect($"/?login_error={reason}");
+        // Si este navegador ya tenía una sesión (p. ej. la web normal antes de entrar al panel),
+        // se cierra y se revocan sus tokens: no quedan sesiones huérfanas.
+        if (http.Request.Cookies.TryGetValue(LoginSessions.CookieName, out var previous))
+        {
+            await sessions.SignOutAsync(previous, ct);
+        }
+        var cookie = await sessions.CreateAsync(user.Id, profile.Subject, tokens, transaction.Admin, ct);
+        http.Response.Cookies.Append(LoginSessions.CookieName, cookie,
+            SessionCookie(o, transaction.Admin ? LoginSessions.AdminLifetime : TimeSpan.FromDays(7)));
+        log.LogInformation("Sesión {Kind} iniciada con ZydroLogin para el usuario {UserId}", transaction.Admin ? "de administración" : "web", user.Id);
+        return Results.Redirect(home);
+
+        IResult Fail(string reason) => Results.Redirect($"{home}?login_error={reason}");
     }
 
     private static async Task RevokeAsync(ZydroLoginClient login, LoginTokens tokens, CancellationToken ct)
@@ -256,5 +279,33 @@ public static class LoginEndpoints
         http.Response.Cookies.Delete(LoginSessions.CookieName, SessionCookie(o, TimeSpan.Zero));
         // La sesión de ZydroLogin (SSO, 8 h) sigue abierta: ZydroLogin no ofrece cerrarla.
         return Results.Ok(new { signedOut = true, tokensRevoked = revoked, ssoSessionStillOpen = true });
+    }
+}
+
+public static class SessionCsrf
+{
+    /// <summary>
+    /// Con la cookie de sesión, el navegador la envía sola: una petición que cambia algo
+    /// (POST, PUT, PATCH, DELETE) solo se acepta si su Origin es el propio. SameSite=Lax ya
+    /// frena casi todo; esto cierra el resto (subdominios, navegadores antiguos). Las
+    /// peticiones con Authorization (tokens) no llevan cookie de sesión y no aplican.
+    /// </summary>
+    public static WebApplication UseSessionCsrfProtection(this WebApplication app)
+    {
+        app.Use(async (ctx, next) =>
+        {
+            var options = ctx.RequestServices.GetRequiredService<IOptions<ZydroLoginOptions>>().Value;
+            if (options.Enabled && !HttpMethods.IsGet(ctx.Request.Method) && !HttpMethods.IsHead(ctx.Request.Method)
+                && !HttpMethods.IsOptions(ctx.Request.Method)
+                && ctx.Request.Cookies.ContainsKey(LoginSessions.CookieName)
+                && string.IsNullOrEmpty(ctx.Request.Headers.Authorization)
+                && ctx.Request.Headers.Origin.ToString() != options.PublicOrigin)
+            {
+                await Results.Problem(statusCode: 403, detail: "Origen no permitido").ExecuteAsync(ctx);
+                return;
+            }
+            await next();
+        });
+        return app;
     }
 }

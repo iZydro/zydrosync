@@ -181,7 +181,11 @@ Usuarios, tokens y entrenamientos de **todos** los usuarios:
 - ver los entrenamientos de cada usuario con el mismo detalle que «Mis carreras», descargar
   el JSON y **borrar** un entrenamiento del servidor.
 
-**En producción**, por túnel SSH (ver `deploy/README.md`):
+**En producción, por la web:** https://sync.isidrogilabert.com/admin/ › *Entrar como
+administrador* (ZydroLogin). Entran solo los emails de `Admin:Emails` (configuración privada;
+`deploy.sh login-register` pone `ZS_ADMIN_EMAIL`).
+
+**Alternativa, por túnel SSH** con un token admin (ver `deploy/README.md`):
 
 ```bash
 deploy/deploy.sh cli tokens create tu@email admin "panel"   # una vez
@@ -193,13 +197,20 @@ deploy/tunnel.sh down       # lo cierra
 http://localhost:8088/admin. El token se guarda solo en esa pestaña.
 
 Por qué así:
-- **Nunca se publica.** `Admin:LocalhostOnly` (activo por defecto) hace que `/admin` solo
-  responda a peticiones con Host `localhost`/`127.0.0.1`, que solo llegan por el túnel: las
-  que pasan por Caddy llevan el Host del dominio y reciben 404, igual que sin token (no un
-  401 que revele que existe). Además, Caddy corta `/admin*` antes. `Admin:Enabled` está
-  desactivado salvo en desarrollo y en el contenedor de producción.
-- El token `admin` es el único que entra en `/admin/api`. Los demás tipos reciben 403, y un
-  token admin no puede subir ni leer por la API pública.
+- **Administrador por la web = tres condiciones:** sesión de ZydroLogin iniciada *como
+  administrador* (`/auth/login?admin=1`), el permiso `zydrosync:admin` concedido por
+  ZydroLogin (solo se pide en ese login, nunca en «Mis carreras»: tu sesión normal no
+  administra) y el email en `Admin:Emails`, que no se puede cambiar desde el panel. Un
+  usuario normal que lo intenta recibe `not_admin` y sus tokens se revocan.
+- **La sesión de administración dura como mucho 12 h**, aunque se renueve el token.
+- **CSRF:** cualquier petición que cambia algo (POST/PUT/PATCH/DELETE) con la cookie de
+  sesión exige `Origin` propio; además la cookie es `SameSite=Lax`.
+- **Tokens `zsa_` solo por el túnel:** `Admin:LocalhostOnly` hace que `/admin/api` les
+  responda 404 si el Host no es `localhost`/`127.0.0.1` (por Caddy llega el del dominio).
+  Un token admin filtrado no sirve desde internet.
+- La página del panel (HTML y JS, sin datos) se sirve a cualquiera; los datos están en
+  `/admin/api`, que exige lo anterior. Los demás tipos de token reciben 403, y un token admin
+  no puede subir ni leer por la API pública.
 - **CSP estricta:** solo se ejecuta JavaScript servido por el propio servidor, sin CDNs. La
   única petición externa son las teselas del mapa a `tile.openstreetmap.org`, que así
   conoce las zonas de las rutas que se visualizan.

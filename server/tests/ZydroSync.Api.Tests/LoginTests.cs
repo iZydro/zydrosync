@@ -34,13 +34,17 @@ public sealed class CapturingLoggerProvider : ILoggerProvider
 }
 
 /// <summary>La API con ZydroLogin configurado, contra el ZydroLogin simulado.</summary>
-public sealed class LoginApiFactory : ApiFactory
+public sealed class LoginApiFactory : LoginApiFactoryBase;
+
+public abstract class LoginApiFactoryBase : ApiFactory
 {
+    protected virtual IEnumerable<KeyValuePair<string, string?>> Extra() => [];
+
     public MutableClock Clock { get; } = new(DateTimeOffset.UtcNow);
     public FakeZydroLogin Login { get; }
     public CapturingLoggerProvider Logs { get; } = new();
 
-    public LoginApiFactory() => Login = new FakeZydroLogin(Clock);
+    protected LoginApiFactoryBase() => Login = new FakeZydroLogin(Clock);
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -56,7 +60,7 @@ public sealed class LoginApiFactory : ApiFactory
             ["Logging:LogLevel:Default"] = "Trace",
             ["Logging:LogLevel:Microsoft.AspNetCore"] = "Trace",
             ["Logging:LogLevel:Microsoft.AspNetCore.Hosting.Diagnostics"] = "Warning",
-        }));
+        }.Concat(Extra())));
         builder.ConfigureLogging(logging => logging.AddProvider(Logs));
         builder.ConfigureTestServices(services =>
         {
@@ -72,10 +76,10 @@ public sealed class LoginApiFactory : ApiFactory
     });
 
     /// <summary>Recorrido completo: /auth/login → ZydroLogin → /auth/callback. Devuelve el Location final.</summary>
-    public async Task<(HttpClient Browser, string Location)> SignInAsync(LoginProfile profile, HttpClient? browser = null)
+    public async Task<(HttpClient Browser, string Location)> SignInAsync(LoginProfile profile, HttpClient? browser = null, bool admin = false)
     {
         browser ??= Browser();
-        var start = await browser.GetAsync("/auth/login");
+        var start = await browser.GetAsync(admin ? "/auth/login?admin=1" : "/auth/login");
         Assert.Equal(HttpStatusCode.Redirect, start.StatusCode);
         var callback = Login.Authorize(start.Headers.Location!, profile) ?? throw new InvalidOperationException("authorize rechazado");
         var done = await browser.GetAsync(callback);
@@ -495,5 +499,122 @@ public sealed class LoginDisabledTests(ApiFactory api) : IClassFixture<ApiFactor
         // Un Bearer que no es propio no se acepta.
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "eyJ.no.valido");
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/v1/workouts")).StatusCode);
+    }
+}
+
+/// <summary>Como en producción: panel activo, tokens admin solo por el túnel, admins por email.</summary>
+public sealed class AdminLoginApiFactory : LoginApiFactoryBase
+{
+    public const string AdminEmail = "admin@example.test";
+    protected override IEnumerable<KeyValuePair<string, string?>> Extra() =>
+    [
+        new("Admin:Enabled", "true"),
+        new("Admin:LocalhostOnly", "true"),
+        new("Admin:Emails:0", AdminEmail),
+    ];
+}
+
+public sealed class AdminLoginTests(AdminLoginApiFactory api) : IClassFixture<AdminLoginApiFactory>
+{
+    private static readonly LoginProfile Admin = new("google-admin", AdminLoginApiFactory.AdminEmail);
+
+    private async Task EnsureUsersAsync()
+    {
+        if (!await api.WithDirectoryAsync(db => db.Users.AnyAsync(u => u.Email == AdminLoginApiFactory.AdminEmail)))
+        {
+            await api.CreateUserAsync(AdminLoginApiFactory.AdminEmail);
+        }
+    }
+
+    private static HttpRequestMessage Send(HttpMethod method, string path, string? origin = "https://sync.test", HttpContent? body = null)
+    {
+        var request = new HttpRequestMessage(method, path) { Content = body };
+        if (origin is not null) request.Headers.Add("Origin", origin);
+        return request;
+    }
+
+    [Fact]
+    public async Task Admin_signs_in_through_zydrologin_and_uses_the_panel_api()
+    {
+        await EnsureUsersAsync();
+
+        var (browser, location) = await api.SignInAsync(Admin, admin: true);
+
+        Assert.Equal("/admin/", location);
+        Assert.Equal(HttpStatusCode.OK, (await browser.GetAsync("/admin/api/users")).StatusCode);
+        var status = await browser.GetFromJsonAsync<JsonElement>("/auth/status");
+        Assert.True(status.GetProperty("user").GetProperty("isAdmin").GetBoolean());
+        var created = await browser.SendAsync(Send(HttpMethod.Post, "/admin/api/users",
+            body: JsonContent.Create(new { email = $"{Guid.NewGuid():N}@example.test" })));
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+    }
+
+    [Fact]
+    public async Task Admin_scope_is_only_requested_for_the_panel()
+    {
+        var web = await api.Browser().GetAsync("/auth/login");
+        var panel = await api.Browser().GetAsync("/auth/login?admin=1");
+
+        Assert.DoesNotContain("zydrosync:admin", Uri.UnescapeDataString(web.Headers.Location!.Query));
+        Assert.Contains("zydrosync:admin", Uri.UnescapeDataString(panel.Headers.Location!.Query));
+    }
+
+    [Fact]
+    public async Task Normal_web_session_of_the_admin_cannot_administer()
+    {
+        await EnsureUsersAsync();
+        var (browser, _) = await api.SignInAsync(Admin);
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await browser.GetAsync("/admin/api/users")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Non_admin_user_asking_for_the_panel_is_rejected()
+    {
+        var email = $"{Guid.NewGuid():N}@example.test";
+        await api.CreateUserAsync(email);
+
+        var (browser, location) = await api.SignInAsync(new LoginProfile($"google-{Guid.NewGuid():N}", email), admin: true);
+
+        Assert.Equal("/admin/?login_error=not_admin", location);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await browser.GetAsync("/admin/api/users")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Admin_changes_need_own_origin()
+    {
+        await EnsureUsersAsync();
+        var (browser, _) = await api.SignInAsync(Admin, admin: true);
+        var body = JsonContent.Create(new { email = $"{Guid.NewGuid():N}@example.test" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await browser.SendAsync(Send(HttpMethod.Post, "/admin/api/users", "https://evil.test", body))).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await browser.SendAsync(Send(HttpMethod.Post, "/admin/api/users", null, body))).StatusCode);
+    }
+
+    [Fact]
+    public async Task Admin_session_ends_after_twelve_hours_even_if_refreshed()
+    {
+        await EnsureUsersAsync();
+        var (browser, _) = await api.SignInAsync(Admin, admin: true);
+
+        for (var i = 0; i < 11; i++)
+        {
+            api.Clock.Advance(TimeSpan.FromHours(1));
+            Assert.Equal(HttpStatusCode.OK, (await browser.GetAsync("/admin/api/users")).StatusCode);
+        }
+        api.Clock.Advance(TimeSpan.FromHours(1.1));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, (await browser.GetAsync("/admin/api/users")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Admin_token_from_internet_is_ignored_but_admin_session_works_there()
+    {
+        await EnsureUsersAsync();
+        var owner = await api.CreateUserAsync();
+        var token = api.ClientWith(await api.CreateTokenAsync(owner.Id, TokenKind.Admin));
+        token.BaseAddress = new Uri("https://sync.test");
+
+        Assert.Equal(HttpStatusCode.NotFound, (await token.GetAsync("/admin/api/users")).StatusCode);
     }
 }

@@ -67,7 +67,10 @@ builder.Services.AddAuthentication(AutoScheme)
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy(Policies.Device, p => p.RequireClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Device)))
     .AddPolicy(Policies.Integration, p => p.RequireClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Integration)))
-    .AddPolicy(Policies.Admin, p => p.RequireClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Admin)))
+    // Token admin (solo por el túnel, ver UseAdminLocalhostOnly) o sesión de administrador de ZydroLogin.
+    .AddPolicy(Policies.Admin, p => p.RequireAssertion(ctx =>
+        ctx.User.HasClaim(BearerTokenHandler.KindClaim, nameof(TokenKind.Admin))
+        || ctx.User.HasClaim(ZydroLoginHandler.AdminClaim, "true")))
     .AddPolicy(Policies.Reader, p => p.RequireAssertion(ctx =>
         ctx.User.HasClaim(c => c.Type == BearerTokenHandler.KindClaim
             && c.Value is nameof(TokenKind.Device) or nameof(TokenKind.Integration) or nameof(TokenKind.Web))
@@ -123,6 +126,7 @@ await using (var scope = app.Services.CreateAsyncScope())
 
 app.UseSecurityHeaders();
 app.UseAdminLocalhostOnly();
+app.UseSessionCsrfProtection();
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 app.UseAuthentication();
